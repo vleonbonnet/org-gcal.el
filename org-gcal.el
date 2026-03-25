@@ -422,7 +422,8 @@ SKIP-EXPORT.  Set SILENT to non-nil to inhibit notifications."
   (when org-gcal--sync-lock
     (user-error "org-gcal sync locked. If a previous sync has failed, call ‘org-gcal--sync-unlock’ to reset the lock and try again."))
   (org-gcal--sync-lock)
-  (org-generic-id-update-id-locations org-gcal-entry-id-property)
+  ;; Don't scan upfront — org-generic-id-find auto-updates on cache miss,
+  ;; and we do a full scan after fetching (before sync-buffer phase).
   (when org-gcal-auto-archive
     (dolist (i org-gcal-fetch-file-alist)
       (with-current-buffer

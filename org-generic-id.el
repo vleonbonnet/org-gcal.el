@@ -269,8 +269,8 @@ When FILES is given, scan also these files."
       (warn
        "WARNING: %d duplicate :%s: properties found, check *Messages* buffer"
        ndup id-prop))
-    (message "%d files scanned, and %d :%s: IDs found."
-             nfiles
+    (message "%d files updated (out of %d), and %d :%s: IDs found."
+             i nfiles
              (hash-table-count (gethash id-prop org-generic-id-locations))
              id-prop)
     org-generic-id-locations))
