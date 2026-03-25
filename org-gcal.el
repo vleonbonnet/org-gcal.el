@@ -98,11 +98,36 @@
 
 (defcustom org-gcal-fetch-file-alist nil
   "\
-Association list '(calendar-id file). For each calendar-id,‘org-gcal-fetch’
-and ‘org-gcal-sync’ will retrieve new events on the calendar and insert
-them into the file."
-  :group 'org-gcal
-  :type '(alist :key-type (string :tag "Calendar Id") :value-type (file :tag "Org file")))
+Association list mapping calendar IDs to sync targets.  Each entry is
+of the form (CALENDAR-ID . TARGET), where TARGET is either:
+
+  FILE       — a path to an Org file (events are appended at top level), or
+  (FILE . HEADING) — events are inserted as children of HEADING in FILE.
+
+When HEADING is specified and does not yet exist in FILE, it is created
+as a top-level heading automatically.
+
+For each calendar-id, `org-gcal-fetch’ and `org-gcal-sync’ will retrieve
+new events on the calendar and insert them into the file."
+  :group ‘org-gcal
+  :type ‘(alist :key-type (string :tag "Calendar Id")
+                :value-type (choice
+                             (file :tag "Org file")
+                             (cons :tag "Org file with heading"
+                                   (file :tag "Org file")
+                                   (string :tag "Heading")))))
+
+(defun org-gcal--calendar-file (calendar-id-file)
+  "Extract the file path from CALENDAR-ID-FILE.
+CALENDAR-ID-FILE is a cons from `org-gcal-fetch-file-alist'."
+  (let ((val (cdr calendar-id-file)))
+    (if (consp val) (car val) val)))
+
+(defun org-gcal--calendar-heading (calendar-id-file)
+  "Extract the optional heading from CALENDAR-ID-FILE, or nil.
+CALENDAR-ID-FILE is a cons from `org-gcal-fetch-file-alist'."
+  (let ((val (cdr calendar-id-file)))
+    (when (consp val) (cdr val))))
 
 (defcustom org-gcal-logo-file nil
   "Org-gcal logo image filename to display in notifications."
@@ -386,7 +411,7 @@ SKIP-EXPORT.  Set SILENT to non-nil to inhibit notifications."
   (when org-gcal-auto-archive
     (dolist (i org-gcal-fetch-file-alist)
       (with-current-buffer
-          (find-file-noselect (cdr i))
+          (find-file-noselect (org-gcal--calendar-file i))
         (org-gcal--archive-old-event))))
   (let ((up-time (org-gcal--up-time))
         (down-time (org-gcal--down-time)))
@@ -402,7 +427,7 @@ SKIP-EXPORT.  Set SILENT to non-nil to inhibit notifications."
                                         (lambda (_)
                                           (org-gcal--notify "Completed event fetching ."
                                                             (concat "Events fetched into\n"
-                                                                    (cdr calendar-id-file))
+                                                                    (org-gcal--calendar-file calendar-id-file))
                                                             silent)
                                           (deferred:succeed nil))))))
       ;; After syncing new events to Org, sync existing events in Org.
@@ -458,7 +483,7 @@ CALENDAR-ID-FILE is a cons in ‘org-gcal-fetch-file-alist’, for which see."
 
 CALENDAR-ID-FILE is a cons in ‘org-gcal-fetch-file-alist’, for which see."
   (let* ((calendar-id (car calendar-id-file))
-         (calendar-file (cdr calendar-id-file))
+         (calendar-file (org-gcal--calendar-file calendar-id-file))
          (page-token-cons '(dummy)))
     (deferred:$
      (org-gcal--sync-request-events calendar-id page-token up-time down-time)
@@ -475,7 +500,9 @@ CALENDAR-ID-FILE is a cons in ‘org-gcal-fetch-file-alist’, for which see."
                      (lambda (events)
                        (org-gcal--sync-handle-events calendar-id calendar-file
                                                      events nil up-time down-time
-                                                     parent-events)))
+                                                     parent-events
+                                                     (org-gcal--calendar-heading
+                                                      calendar-id-file))))
      (deferred:nextc it
                      (lambda (entries)
                        (org-gcal--sync-update-entries calendar-id entries skip-export)))
@@ -496,7 +523,7 @@ CALENDAR-ID-FILE is a cons in ‘org-gcal-fetch-file-alist’, for which see."
 
 CALENDAR-ID-FILE is a cons in ‘org-gcal-fetch-file-alist’, for which see."
   (let* ((calendar-id (car calendar-id-file))
-         (calendar-file (cdr calendar-id-file))
+         (calendar-file (org-gcal--calendar-file calendar-id-file))
          (page-token-cons '(dummy)))
     (deferred:$
      (org-gcal--sync-request-instances calendar-id parent-event-id
@@ -513,7 +540,9 @@ CALENDAR-ID-FILE is a cons in ‘org-gcal-fetch-file-alist’, for which see."
      (deferred:nextc it
                      (lambda (events)
                        (org-gcal--sync-handle-events calendar-id calendar-file
-                                                     events t up-time down-time nil)))
+                                                     events t up-time down-time nil
+                                                     (org-gcal--calendar-heading
+                                                      calendar-id-file))))
      (deferred:nextc it
                      (lambda (entries)
                        (org-gcal--sync-update-entries calendar-id entries skip-export)))
@@ -533,7 +562,7 @@ CALENDAR-ID-FILE is a cons in ‘org-gcal-fetch-file-alist’, for which see."
 
 CALENDAR-ID-FILE is a cons in ‘org-gcal-fetch-file-alist’, for which see."
   (let* ((calendar-id (car calendar-id-file))
-         (calendar-file (cdr calendar-id-file)))
+         (calendar-file (org-gcal--calendar-file calendar-id-file)))
 
     (deferred:$
      (org-gcal--get-event calendar-id event-id)
@@ -542,7 +571,9 @@ CALENDAR-ID-FILE is a cons in ‘org-gcal-fetch-file-alist’, for which see."
      (deferred:nextc it
                      (lambda (events)
                        (org-gcal--sync-handle-events calendar-id calendar-file
-                                                     events nil nil nil nil)))
+                                                     events nil nil nil nil
+                                                     (org-gcal--calendar-heading
+                                                      calendar-id-file))))
      (deferred:nextc it
                      (lambda (entries)
                        (org-gcal--sync-update-entries calendar-id entries skip-export))))))
@@ -671,12 +702,14 @@ objects for further processing."
 
 (defun org-gcal--sync-handle-events
     (calendar-id calendar-file events recurring-instances? up-time down-time
-                 parent-events)
+                 parent-events &optional calendar-heading)
   "Handle a list of EVENTS fetched from the Calendar API.
 
-CALENDAR-ID and CALENDAR-FILE are defined in ‘org-gcal--sync-inner'.
+CALENDAR-ID and CALENDAR-FILE are defined in ‘org-gcal--sync-inner’.
 RECURRING-INSTANCES? is t if we’re currently fetching instances of recurring
 events and nil otherwise.
+CALENDAR-HEADING, when non-nil, is a string naming a heading under which
+new events should be inserted as children.
 
 Any parent recurring events are appended in-place to the list PARENT-EVENTS."
   (with-current-buffer (find-file-noselect calendar-file)
@@ -744,14 +777,33 @@ Any parent recurring events are appended in-place to the list PARENT-EVENTS."
         ((string= "cancelled" (plist-get event :status))
          nil)
         (t
-         ;; Otherwise, insert a new entry into the
-         ;; default fetch file.
+         ;; Otherwise, insert a new entry into the fetch file.
+         ;; When CALENDAR-HEADING is set, insert as a child of that
+         ;; heading; otherwise append at top level.
          (atomic-change-group
-           (org-with-point-at (point-max)
-             (insert "\n* ")
-             (org-gcal--update-entry calendar-id event 'newly-fetched)
-             (org-entry-put (point) org-gcal-managed-property
-                            org-gcal-managed-newly-fetched-mode)))
+           (if calendar-heading
+               (let ((pos (org-find-exact-headline-in-buffer
+                           calendar-heading)))
+                 (unless pos
+                   ;; Create the heading if it doesn't exist yet.
+                   (goto-char (point-max))
+                   (unless (bolp) (insert "\n"))
+                   (insert "* " calendar-heading "\n")
+                   (setq pos (org-find-exact-headline-in-buffer
+                              calendar-heading)))
+                 (goto-char pos)
+                 (let ((level (org-current-level)))
+                   (org-end-of-subtree t t)
+                   (unless (bolp) (insert "\n"))
+                   (insert (make-string (1+ level) ?*) " ")
+                   (org-gcal--update-entry calendar-id event 'newly-fetched)
+                   (org-entry-put (point) org-gcal-managed-property
+                                  org-gcal-managed-newly-fetched-mode)))
+             (org-with-point-at (point-max)
+               (insert "\n* ")
+               (org-gcal--update-entry calendar-id event 'newly-fetched)
+               (org-entry-put (point) org-gcal-managed-property
+                              org-gcal-managed-newly-fetched-mode))))
          nil)))
      collect it)))
 
@@ -1296,7 +1348,7 @@ For valid values of EXISTING-MODE see
                ".*(\\(.*?\\))$" "\\1"
                (completing-read "Calendar ID: "
                                 (mapcar
-                                 (lambda (x) (format "%s (%s)" (cdr x) (car x)))
+                                 (lambda (x) (format "%s (%s)" (org-gcal--calendar-file x) (car x)))
                                  org-gcal-fetch-file-alist))))
         (org-entry-put (point) org-gcal-calendar-id-property calendar-id))
       (when (equal managed "gcal")
@@ -1877,9 +1929,10 @@ Depends on the value of ‘org-gcal-remove-api-cancelled-events’."
 
 (defun org-gcal--get-calendar-id-of-buffer ()
   "Find calendar id of current buffer."
-  (or (cl-loop for (id . file) in org-gcal-fetch-file-alist
-               if (file-equal-p file (buffer-file-name (buffer-base-buffer)))
-               return id)
+  (or (cl-loop for entry in org-gcal-fetch-file-alist
+               if (file-equal-p (org-gcal--calendar-file entry)
+                                (buffer-file-name (buffer-base-buffer)))
+               return (car entry))
       (user-error (concat "Buffer `%s' may not be related to google calendar; "
                           "please check/configure `org-gcal-fetch-file-alist'")
                   (buffer-name))))
@@ -2183,7 +2236,7 @@ Returns a ‘deferred’ object that can be used to wait for completion."
           (org-capture-goto-last-stored))
         (dolist (i org-gcal-fetch-file-alist)
           (when (and (buffer-file-name)
-                     (string= (file-truename (cdr i))
+                     (string= (file-truename (org-gcal--calendar-file i))
                               (file-truename (buffer-file-name))))
             (org-entry-put (point) org-gcal-calendar-id-property (car i))
             (org-gcal-post-at-point)))))))
@@ -2200,7 +2253,7 @@ Returns a ‘deferred’ object that can be used to wait for completion."
       (save-window-excursion
         (dolist (i org-gcal-fetch-file-alist)
           (when (and (buffer-file-name)
-                     (string= (file-truename (cdr i))
+                     (string= (file-truename (org-gcal--calendar-file i))
                               (file-truename (buffer-file-name))))
             (org-entry-put (point) org-gcal-calendar-id-property (car i))
             (org-gcal-post-at-point)))))))
