@@ -129,6 +129,21 @@ CALENDAR-ID-FILE is a cons from `org-gcal-fetch-file-alist'."
   (let ((val (cdr calendar-id-file)))
     (when (consp val) (cdr val))))
 
+(defcustom org-gcal-account nil
+  "Google account email used for OAuth authentication.
+All calendars in `org-gcal-fetch-file-alist' share a single OAuth
+token under this account, avoiding repeated browser authorization.
+When nil, falls back to the first calendar ID in
+`org-gcal-fetch-file-alist'."
+  :group 'org-gcal
+  :type '(choice (const :tag "Use first calendar ID" nil)
+                 (string :tag "Google account email")))
+
+(defun org-gcal--account ()
+  "Return the Google account email for OAuth authentication."
+  (or org-gcal-account
+      (caar org-gcal-fetch-file-alist)))
+
 (defcustom org-gcal-logo-file nil
   "Org-gcal logo image filename to display in notifications."
   :group 'org-gcal
@@ -1464,20 +1479,24 @@ delete calendar info from events on calendars you no longer have access to."
                (deferred:succeed nil))))
         (deferred:succeed nil)))))
 
-(defun org-gcal--get-access-token (calendar-id)
-  "Return the access token for CALENDAR-ID."
+(defun org-gcal--get-access-token (_calendar-id)
+  "Return the access token for the configured Google account.
+_CALENDAR-ID is accepted for compatibility but ignored; all
+calendars share a single OAuth token via `org-gcal--account'."
   (aio-wait-for
-   (oauth2-auto-access-token calendar-id 'org-gcal)))
+   (oauth2-auto-access-token (org-gcal--account) 'org-gcal)))
 
-(defun org-gcal--refresh-token (calendar-id)
-  "Refresh OAuth access and return the new access token as a deferred object."
+(defun org-gcal--refresh-token (_calendar-id)
+  "Refresh OAuth access and return the new access token as a deferred object.
+_CALENDAR-ID is accepted for compatibility but ignored; all
+calendars share a single OAuth token via `org-gcal--account'."
   ;; FIXME: For now, we just synchronously wait for the refresh. Once the
   ;; project has been rewritten to use aio
   ;; (https://github.com/kidd/org-gcal.el/issues/191), we can wait for this
   ;; asynchronously as well.
   (let ((token
          (aio-wait-for
-          (oauth2-auto-access-token calendar-id 'org-gcal))))
+          (oauth2-auto-access-token (org-gcal--account) 'org-gcal))))
     (deferred:succeed token)))
 
 ;;;###autoload
