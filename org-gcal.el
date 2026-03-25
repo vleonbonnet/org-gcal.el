@@ -596,16 +596,17 @@ CALENDAR-ID-FILE is a cons in ‘org-gcal-fetch-file-alist’, for which see."
 (defun org-gcal--sync-request-events
     (calendar-id page-token up-time down-time)
   "Request events on CALENDAR-ID, using PAGE-TOKEN if present."
-  (request-deferred
-   (org-gcal-events-url calendar-id)
-   :type "GET"
-   :headers
-   `(("Accept" . "application/json")
-     ("Authorization" . ,(format "Bearer %s" (org-gcal--get-access-token calendar-id))))
-   :params
-   (append
-    `(("access_token" . ,(org-gcal--get-access-token calendar-id))
-      ("singleEvents" . "True"))
+  (let ((token (org-gcal--get-access-token calendar-id)))
+   (request-deferred
+    (org-gcal-events-url calendar-id)
+    :type "GET"
+    :headers
+    `(("Accept" . "application/json")
+      ("Authorization" . ,(format "Bearer %s" token)))
+    :params
+    (append
+     `(("access_token" . ,token)
+       ("singleEvents" . "True"))
     (when org-gcal-local-timezone `(("timeZone" . ,org-gcal-local-timezone)))
     (seq-let [expires sync-token]
         ;; Ensure ‘org-gcal--sync-tokens-get’ return value is actually a list
@@ -623,25 +624,26 @@ CALENDAR-ID-FILE is a cons in ‘org-gcal-fetch-file-alist’, for which see."
         (setf (org-gcal--sync-tokens-get calendar-id 'remove) nil)
         `(("timeMin" . ,(org-gcal--format-time2iso up-time))
           ("timeMax" . ,(org-gcal--format-time2iso down-time))))))
-    (when page-token `(("pageToken" . ,page-token))))
-   :parser 'org-gcal--json-read))
+     (when page-token `(("pageToken" . ,page-token))))
+    :parser 'org-gcal--json-read)))
 
 (defun org-gcal--sync-request-instances
     (calendar-id event-id up-time down-time page-token)
   "Request instances of recurring event EVENT-ID on CALENDAR-ID."
-  (request-deferred
-   (org-gcal-instances-url calendar-id event-id)
-   :type "GET"
-   :headers
-   `(("Accept" . "application/json")
-     ("Authorization" . ,(format "Bearer %s" (org-gcal--get-access-token calendar-id))))
-   :params
-   (append
-    `(("access_token" . ,(org-gcal--get-access-token calendar-id))
-      ("timeMin" . ,(org-gcal--format-time2iso up-time))
-      ("timeMax" . ,(org-gcal--format-time2iso down-time)))
-    (when page-token `(("pageToken" . ,page-token))))
-   :parser 'org-gcal--json-read))
+  (let ((token (org-gcal--get-access-token calendar-id)))
+    (request-deferred
+     (org-gcal-instances-url calendar-id event-id)
+     :type "GET"
+     :headers
+     `(("Accept" . "application/json")
+       ("Authorization" . ,(format "Bearer %s" token)))
+     :params
+     (append
+      `(("access_token" . ,token)
+        ("timeMin" . ,(org-gcal--format-time2iso up-time))
+        ("timeMax" . ,(org-gcal--format-time2iso down-time)))
+      (when page-token `(("pageToken" . ,page-token))))
+     :parser 'org-gcal--json-read)))
 
 (defun org-gcal--sync-handle-response
     (response calendar-id-file page-token-cons down-time retry-fn)
@@ -909,7 +911,6 @@ to “org”."
                         (deferred:succeed nil))))
      :finally
      (lambda ()
-       (org-generic-id-update-id-locations org-gcal-entry-id-property)
        (org-gcal--sync-unlock)))))
 
 (defmacro org-gcal--with-point-at-no-widen (pom &rest body)
