@@ -109,8 +109,8 @@ as a top-level heading automatically.
 
 For each calendar-id, `org-gcal-fetch’ and `org-gcal-sync’ will retrieve
 new events on the calendar and insert them into the file."
-  :group ‘org-gcal
-  :type ‘(alist :key-type (string :tag "Calendar Id")
+  :group 'org-gcal
+  :type '(alist :key-type (string :tag "Calendar Id")
                 :value-type (choice
                              (file :tag "Org file")
                              (cons :tag "Org file with heading"
