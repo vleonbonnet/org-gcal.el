@@ -469,28 +469,8 @@ SKIP-EXPORT.  Set SILENT to non-nil to inhibit notifications."
   "Sync events for CALENDAR-ID-FILE
 
 CALENDAR-ID-FILE is a cons in ‘org-gcal-fetch-file-alist’, for which see."
-  (let* (
-         ;; Need to add a dummy value to the beginning of the list to generate a
-         ;; unique list that can be modified in
-         ;; ‘org-gcal--sync-calendar-events’. Later we’ll strip this first
-         ;; element.
-         (parent-events (list 'dummy)))
-    (deferred:$
-     (org-gcal--sync-calendar-events
-      calendar-id-file skip-export silent nil up-time down-time parent-events)
-     (deferred:nextc it
-                     (lambda (_)
-                       (deferred:loop
-                        ;; Strip dummy first element and remove duplicates
-                        (cl-remove-duplicates (cdr parent-events) :test #'string=)
-                        (lambda (parent-event-id)
-                          (when (eq org-gcal-recurring-events-mode 'nested)
-                            (deferred:$
-                             (org-gcal--sync-event
-                              calendar-id-file parent-event-id skip-export)
-                             (org-gcal--sync-instances
-                              calendar-id-file parent-event-id skip-export silent nil
-                              up-time down-time))))))))))
+  (org-gcal--sync-calendar-events
+   calendar-id-file skip-export silent nil up-time down-time nil))
 
 (defun org-gcal--sync-calendar-events
     (calendar-id-file skip-export silent page-token up-time down-time
@@ -606,8 +586,7 @@ CALENDAR-ID-FILE is a cons in ‘org-gcal-fetch-file-alist’, for which see."
       ("Authorization" . ,(format "Bearer %s" token)))
     :params
     (append
-     `(("access_token" . ,token)
-       ("singleEvents" . "True"))
+     `(("access_token" . ,token))
     (when org-gcal-local-timezone `(("timeZone" . ,org-gcal-local-timezone)))
     (seq-let [expires sync-token]
         ;; Ensure ‘org-gcal--sync-tokens-get’ return value is actually a list
@@ -731,26 +710,26 @@ new events should be inserted as children.
 
 Any parent recurring events are appended in-place to the list PARENT-EVENTS."
   (with-current-buffer (find-file-noselect calendar-file)
+    ;; Expand multi-BYDAY weekly recurring events into per-day entries.
+    (setq events (org-gcal--expand-multi-day-events events calendar-id))
     (cl-loop
      for event across events
      if
      (let* ((entry-id (org-gcal--format-entry-id
                        calendar-id (plist-get event :id)))
             (marker (org-gcal--id-find entry-id 'markerp)))
-       (when (plist-get event :recurrence)
-         (nconc parent-events (list
-                               (org-gcal--event-id-from-entry-id entry-id))))
        (cond
-        ;; Ignore event entirely if it is an instance of a recurring event
-        ;; unless we’re currently fetching
-        ;; instances of recurring events (i.e., RECURRING-INSTANCES? is
-        ;; non-nil).
-        ((and (eq org-gcal-recurring-events-mode 'nested)
-              (not recurring-instances?)
-              (plist-get event :recurringEventId))
-         (nconc parent-events
-                (list
-                 (plist-get event :recurringEventId)))
+        ;; Skip exception instances of recurring events unless we already
+        ;; track them from a previous sync.  With singleEvents=False the API
+        ;; only returns master events and exception instances.
+        ((and (plist-get event :recurringEventId)
+              (not marker))
+         nil)
+        ;; Cancelled events may lack start/end fields.  If we have an
+        ;; existing heading, just mark it cancelled without a full update.
+        ((and marker (org-gcal--event-cancelled-p event))
+         (org-with-point-at marker
+           (org-gcal--handle-cancelled-entry))
          nil)
         ;; If event is present, collect it for later processing.
         (marker
@@ -765,32 +744,24 @@ Any parent recurring events are appended in-place to the list PARENT-EVENTS."
         ;; changed on the calendar, without respecting
         ;; ‘org-gcal-up-days’ or ‘org-gcal-down-days’, which means
         ;; repeated events far in the future will be downloaded.
-        ((when-let*
-             ((up-time) (down-time)
-              (start (plist-get event :start))
-              (end (plist-get event :end))
-              ((or (time-less-p (org-gcal--parse-calendar-time start)
-                                up-time)
-                   (time-less-p down-time
-                                (org-gcal--parse-calendar-time end)))))
-           t)
+        ;; Skip this check for master recurring events — their start
+        ;; date is the first occurrence, not the current one.
+        ;; Use condition-case because pre-epoch dates (e.g. birthdays)
+        ;; can fail to parse on some platforms.
+        ((and (not (plist-get event :recurrence))
+              (when-let*
+                  ((up-time) (down-time)
+                   (start (plist-get event :start))
+                   (end (plist-get event :end))
+                   ((condition-case nil
+                        (or (time-less-p (org-gcal--parse-calendar-time start)
+                                         up-time)
+                            (time-less-p down-time
+                                         (org-gcal--parse-calendar-time end)))
+                      (error nil))))
+                t))
          nil)
-        ;; When fetching instances of recurring events that are not yet
-        ;; present, insert them below their parent events, if the parent event
-        ;; exists.
-        (recurring-instances?
-         (let* ((parent-id (org-gcal--format-entry-id
-                            calendar-id (plist-get event :recurringEventId)))
-                (parent-marker
-                 (when parent-id (org-gcal--id-find parent-id 'markerp))))
-           (when parent-marker
-             (atomic-change-group
-               (org-with-point-at parent-marker
-                 (org-insert-heading-respect-content 'invisible-ok)
-                 (org-demote)
-                 (org-gcal--update-entry calendar-id event 'newly-fetched))))
-           nil))
-        ;; Don't insert instances of cancelled events that haven't already been
+        ;; Don’t insert instances of cancelled events that haven’t already been
         ;; fetched.
         ((string= "cancelled" (plist-get event :status))
          nil)
@@ -803,7 +774,7 @@ Any parent recurring events are appended in-place to the list PARENT-EVENTS."
                (let ((pos (org-find-exact-headline-in-buffer
                            calendar-heading)))
                  (unless pos
-                   ;; Create the heading if it doesn't exist yet.
+                   ;; Create the heading if it doesn’t exist yet.
                    (goto-char (point-max))
                    (unless (bolp) (insert "\n"))
                    (insert "* " calendar-heading "\n")
@@ -1413,8 +1384,6 @@ For valid values of EXISTING-MODE see
                  (end-time (time-add start-time duration-seconds)))
             (setq start (org-gcal--format-time2iso start-time)
                   end (org-gcal--format-time2iso end-time))))
-        (when recurrence
-          (setq start nil end nil))
         (org-gcal--post-event start end smry loc source desc calendar-id marker transparency etag
                               event-id nil skip-import skip-export)))))
 
@@ -1629,16 +1598,17 @@ plain text suitable for insertion into Org files."
     (and
      (= (length s) 10)
      (= (length e) 10)
-     (= (- (time-to-seconds
-            (encode-time 0 0 0
-                         (plist-get elst :day)
-                         (plist-get elst :mon)
-                         (plist-get elst :year)))
-           (time-to-seconds
-            (encode-time 0 0 0
-                         (plist-get slst :day)
-                         (plist-get slst :mon)
-                         (plist-get slst :year)))) 86400))))
+     ;; Check if end is exactly 1 day after start.  Use calendar
+     ;; absolute days to avoid encode-time failures on pre-epoch dates.
+     (= (- (calendar-absolute-from-gregorian
+             (list (plist-get elst :mon)
+                   (plist-get elst :day)
+                   (plist-get elst :year)))
+           (calendar-absolute-from-gregorian
+             (list (plist-get slst :mon)
+                   (plist-get slst :day)
+                   (plist-get slst :year))))
+        1))))
 
 (defun org-gcal--parse-date (str)
   (list :year (string-to-number  (org-gcal--safe-substring str 0 4))
@@ -1656,15 +1626,19 @@ Return an Emacs time object from ‘encode-time'."
        (plist-get time :date))))
 
 (defun org-gcal--parse-calendar-time-string (time-string)
-  (if (< 11 (length time-string))
-      (parse-iso8601-time-string time-string)
-    (apply #'encode-time
-           ;; Full days have time strings with unknown hour, minute, and
-           ;; second, which ‘parse-time-string’ will set to
-           ;; nil. ‘encode-time’ can’t tolerate that, so instead set the time
-           ;; to 00:00:00.
-           `(0 0 0 .
-             ,(nthcdr 3 (parse-time-string time-string))))))
+  (condition-case nil
+      (if (< 11 (length time-string))
+          (parse-iso8601-time-string time-string)
+        (apply #'encode-time
+               ;; Full days have time strings with unknown hour, minute, and
+               ;; second, which ‘parse-time-string’ will set to
+               ;; nil. ‘encode-time’ can’t tolerate that, so instead set the
+               ;; time to 00:00:00.
+               `(0 0 0 .
+                 ,(nthcdr 3 (parse-time-string time-string)))))
+    ;; Pre-epoch dates can fail on some platforms.  Return epoch as
+    ;; fallback so callers that use this for filtering still work.
+    (error (encode-time 0 0 0 1 1 1970))))
 
 (defun org-gcal--down-time ()
   "Convert ‘org-gcal-down-days’ to Emacs time value."
@@ -1681,17 +1655,170 @@ Return an Emacs time object from ‘encode-time'."
   "Format Emacs time value TIME to ISO format string."
   (format-time-string "%FT%T%z" time (car (org-gcal--time-zone 0))))
 
-(defun org-gcal--format-iso2org (str &optional tz)
+(defun org-gcal--rrule-parse (recurrence)
+  "Parse RECURRENCE into an alist of RRULE parameters.
+RECURRENCE is a vector of strings from the Google Calendar API.
+Returns nil if no RRULE is found."
+  (when-let* ((rules (append recurrence nil))
+              (rrule-str (cl-find-if
+                          (lambda (s) (string-prefix-p "RRULE:" s))
+                          rules)))
+    (mapcar (lambda (p)
+              (let ((kv (split-string p "=")))
+                (cons (car kv) (cadr kv))))
+            (split-string (substring rrule-str 6) ";"))))
+
+(defun org-gcal--rrule-to-repeater (recurrence)
+  "Convert RECURRENCE to an Org repeater string, or nil if not mappable.
+
+RECURRENCE is the value of the `recurrence' field from the Google Calendar API,
+a vector of strings like [\"RRULE:FREQ=WEEKLY;INTERVAL=2\"].
+
+Returns a string like \"+1w\", \"+2m\", etc., or nil if the rule is too complex
+to represent as an Org repeater.  Multi-day BYDAY weekly rules return nil here;
+use `org-gcal--rrule-expand-days' for those."
+  (when-let* ((pairs (org-gcal--rrule-parse recurrence)))
+    (let* ((freq (cdr (assoc "FREQ" pairs)))
+           (interval (string-to-number (or (cdr (assoc "INTERVAL" pairs)) "1")))
+           (byday (cdr (assoc "BYDAY" pairs)))
+           (bymonthday (cdr (assoc "BYMONTHDAY" pairs)))
+           (bysetpos (cdr (assoc "BYSETPOS" pairs)))
+           (unit (pcase freq
+                   ("DAILY" "d")
+                   ("WEEKLY" "w")
+                   ("MONTHLY" "m")
+                   ("YEARLY" "y"))))
+      ;; Bail out for complex rules that can't map to a single repeater.
+      (when (and unit
+                 (not bymonthday)
+                 (not bysetpos)
+                 ;; BYDAY with multiple days can't be a single repeater.
+                 ;; A single BYDAY for weekly events just confirms the day.
+                 (not (and byday
+                           (or (not (string= freq "WEEKLY"))
+                               (string-match-p "," byday)))))
+        (format "+%d%s" interval unit)))))
+
+(defvar org-gcal--day-of-week-alist
+  '(("SU" . 0) ("MO" . 1) ("TU" . 2) ("WE" . 3)
+    ("TH" . 4) ("FR" . 5) ("SA" . 6))
+  "Map RRULE day abbreviations to `calendar-day-of-week' numbers (0=Sun).")
+
+(defun org-gcal--rrule-expand-days (recurrence)
+  "For multi-day BYDAY weekly rules, return a list of day offsets.
+
+Each element is (DAY-ABBREV . OFFSET-DAYS) where OFFSET-DAYS is relative to
+the event's start date.  Returns nil if the rule is not a multi-day weekly
+BYDAY rule (i.e., it's already handled by `org-gcal--rrule-to-repeater')."
+  (when-let* ((pairs (org-gcal--rrule-parse recurrence))
+              ((string= (cdr (assoc "FREQ" pairs)) "WEEKLY"))
+              (byday (cdr (assoc "BYDAY" pairs)))
+              ((string-match-p "," byday))
+              ((not (cdr (assoc "BYMONTHDAY" pairs))))
+              ((not (cdr (assoc "BYSETPOS" pairs)))))
+    (let ((days (split-string byday ",")))
+      (mapcar (lambda (d) (cons d (cdr (assoc d org-gcal--day-of-week-alist))))
+              days))))
+
+(defun org-gcal--shift-iso-date (iso-str day-offset start-dow)
+  "Shift ISO-STR forward so it falls on DAY-OFFSET (0=Sun..6=Sat).
+START-DOW is the day-of-week of ISO-STR.  Returns a new ISO date string."
+  (let ((delta (mod (- day-offset start-dow) 7)))
+    (if (= delta 0)
+        iso-str
+      (let* ((plst (org-gcal--parse-date iso-str))
+             (abs-day (calendar-absolute-from-gregorian
+                       (list (plist-get plst :mon)
+                             (plist-get plst :day)
+                             (plist-get plst :year))))
+             (new-date (calendar-gregorian-from-absolute (+ abs-day delta)))
+             (m (nth 0 new-date))
+             (d (nth 1 new-date))
+             (y (nth 2 new-date)))
+        (if (< 11 (length iso-str))
+            ;; DateTime: replace the date portion, keep the time
+            (format "%04d-%02d-%02d%s" y m d (substring iso-str 10))
+          (format "%04d-%02d-%02d" y m d))))))
+
+(defun org-gcal--expand-multi-day-events (events calendar-id)
+  "Expand multi-BYDAY weekly recurring EVENTS into per-day synthetic events.
+Returns a new vector with expanded events.  Non-expandable events are
+passed through unchanged."
+  (let (result)
+    (cl-loop
+     for event across events
+     do
+     (let ((expand-days (org-gcal--rrule-expand-days
+                         (plist-get event :recurrence))))
+       (if (not expand-days)
+           (push event result)
+         ;; Compute start day-of-week from the event's start date.
+         (let* ((stime (or (plist-get (plist-get event :start) :dateTime)
+                           (plist-get (plist-get event :start) :date)))
+                (plst (org-gcal--parse-date stime))
+                (start-dow (calendar-day-of-week
+                            (list (plist-get plst :mon)
+                                  (plist-get plst :day)
+                                  (plist-get plst :year))))
+                (pairs (org-gcal--rrule-parse (plist-get event :recurrence)))
+                (interval (string-to-number
+                           (or (cdr (assoc "INTERVAL" pairs)) "1")))
+                (repeater (format "+%dw" interval)))
+           (dolist (day-info expand-days)
+             (let* ((day-abbrev (car day-info))
+                    (target-dow (cdr day-info))
+                    (new-id (format "%s_%s" (plist-get event :id) day-abbrev))
+                    (shifted-start
+                     (org-gcal--shift-iso-date stime target-dow start-dow))
+                    ;; Shift end by the same delta as start.
+                    (etime (or (plist-get (plist-get event :end) :dateTime)
+                               (plist-get (plist-get event :end) :date)))
+                    (shifted-end
+                     (org-gcal--shift-iso-date etime target-dow start-dow))
+                    ;; Build synthetic event with shifted times.
+                    (new-event (copy-sequence event)))
+               (plist-put new-event :id new-id)
+               (plist-put new-event :org-gcal-repeater repeater)
+               ;; Rebuild :start and :end with shifted dates.
+               (let ((start-obj (copy-sequence (plist-get event :start)))
+                     (end-obj (copy-sequence (plist-get event :end))))
+                 (if (plist-get start-obj :dateTime)
+                     (plist-put start-obj :dateTime shifted-start)
+                   (plist-put start-obj :date shifted-start))
+                 (if (plist-get end-obj :dateTime)
+                     (plist-put end-obj :dateTime shifted-end)
+                   (plist-put end-obj :date shifted-end))
+                 (plist-put new-event :start start-obj)
+                 (plist-put new-event :end end-obj))
+               (push new-event result)))))))
+    (vconcat (nreverse result))))
+
+(defun org-gcal--format-iso2org (str &optional tz repeater)
   (let* ((plst (org-gcal--parse-date str))
-         (seconds (org-gcal--time-to-seconds plst)))
+         (date-part
+          (condition-case nil
+              (let ((seconds (org-gcal--time-to-seconds plst)))
+                (format-time-string
+                 (if (< 11 (length str)) "%Y-%m-%d %a %H:%M" "%Y-%m-%d %a")
+                 (seconds-to-time
+                  (+ (if tz (car (org-gcal--time-zone seconds)) 0)
+                     seconds))))
+            ;; Fallback for dates that encode-time can't handle (e.g.
+            ;; pre-epoch on Windows).  Compute day-of-week via calendar.
+            (error
+             (let* ((y (plist-get plst :year))
+                    (m (plist-get plst :mon))
+                    (d (plist-get plst :day))
+                    (dow (calendar-day-name (list m d y) t)))
+               (if (< 11 (length str))
+                   (format "%04d-%02d-%02d %s %02d:%02d"
+                           y m d dow
+                           (plist-get plst :hour)
+                           (plist-get plst :min))
+                 (format "%04d-%02d-%02d %s" y m d dow)))))))
     (concat
-     "<"
-     (format-time-string
-      (if (< 11 (length str)) "%Y-%m-%d %a %H:%M" "%Y-%m-%d %a")
-      (seconds-to-time
-       (+ (if tz (car (org-gcal--time-zone seconds)) 0)
-          seconds)))
-     ;;(if (and repeat (not (string= repeat ""))) (concat " " repeat) "")
+     "<" date-part
+     (if (and repeater (not (string= repeater ""))) (concat " " repeater) "")
      ">")))
 
 (defun org-gcal--make-link-string (url title)
@@ -1707,16 +1834,22 @@ Return an Emacs time object from ‘encode-time'."
     (format "[[%s]]" url))))
 
 (defun org-gcal--format-org2iso (year mon day &optional hour min tz)
-  (let ((seconds (time-to-seconds (encode-time 0
-                                               (or min 0)
-                                               (or hour 0)
-                                               day mon year))))
-    (format-time-string
-     (if (or hour min) "%Y-%m-%dT%H:%M:00Z" "%Y-%m-%d")
-     (seconds-to-time
-      (-
-       seconds
-       (if tz (car (org-gcal--time-zone seconds)) 0))))))
+  (condition-case nil
+      (let ((seconds (time-to-seconds (encode-time 0
+                                                   (or min 0)
+                                                   (or hour 0)
+                                                   day mon year))))
+        (format-time-string
+         (if (or hour min) "%Y-%m-%dT%H:%M:00Z" "%Y-%m-%d")
+         (seconds-to-time
+          (-
+           seconds
+           (if tz (car (org-gcal--time-zone seconds)) 0)))))
+    ;; Fallback for pre-epoch dates that encode-time can't handle.
+    (error
+     (if (or hour min)
+         (format "%04d-%02d-%02dT%02d:%02d:00Z" year mon day (or hour 0) (or min 0))
+       (format "%04d-%02d-%02d" year mon day)))))
 
 (defun org-gcal--iso-next-day (str &optional previous-p)
   (let ((format (if (< 11 (length str))
@@ -1781,6 +1914,8 @@ heading."
          (old-start (plist-get old-time-desc :start))
          (old-end (plist-get old-time-desc :start))
          (recurrence (plist-get event :recurrence))
+         (repeater (or (plist-get event :org-gcal-repeater)
+                       (org-gcal--rrule-to-repeater recurrence)))
          (elem (org-element-at-point)))
     (when loc (replace-regexp-in-string "\n" ", " loc))
     (org-edit-headline
@@ -1848,14 +1983,10 @@ heading."
     (newline)
     (insert (format ":%s:" org-gcal-drawer-name))
     (newline)
-    ;; Keep existing timestamps for parent recurring events.
-    (when (and recurrence old-start old-end)
-      (setq start old-start
-            end old-end))
     (let*
         ((timestamp
           (if (or (string= start end) (org-gcal--alldayp start end))
-              (org-gcal--format-iso2org start)
+              (org-gcal--format-iso2org start nil repeater)
             (if (and
                  (= (plist-get (org-gcal--parse-date start) :year)
                     (plist-get (org-gcal--parse-date end)   :year))
@@ -1863,21 +1994,21 @@ heading."
                     (plist-get (org-gcal--parse-date end)   :mon))
                  (= (plist-get (org-gcal--parse-date start) :day)
                     (plist-get (org-gcal--parse-date end)   :day)))
-                (format "<%s-%s>"
+                (format "<%s-%s%s>"
                         (org-gcal--format-date start "%Y-%m-%d %a %H:%M")
-                        (org-gcal--format-date end "%H:%M"))
+                        (org-gcal--format-date end "%H:%M")
+                        (if repeater (concat " " repeater) ""))
               (format "%s--%s"
-                      (org-gcal--format-iso2org start)
+                      (org-gcal--format-iso2org start nil repeater)
                       (org-gcal--format-iso2org
                        (if (< 11 (length end))
                            end
                          (org-gcal--iso-previous-day end))))))))
       (if (org-element-property :scheduled elem)
-          (unless (and recurrence old-start)
-            ;; Ensure CLOSED timestamp isn’t wiped out by ‘org-gcal-sync’ (see
-            ;; https://github.com/kidd/org-gcal.el/issues/218).
-            (let ((org-closed-keep-when-no-todo t))
-              (org-schedule nil timestamp)))
+          ;; Ensure CLOSED timestamp isn’t wiped out by ‘org-gcal-sync’ (see
+          ;; https://github.com/kidd/org-gcal.el/issues/218).
+          (let ((org-closed-keep-when-no-todo t))
+            (org-schedule nil timestamp))
         (insert timestamp)
         (newline)
         (when desc (newline))))
