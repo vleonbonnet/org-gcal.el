@@ -2399,16 +2399,17 @@ Returns a ‘deferred’ object that can be used to wait for completion."
       (save-window-excursion
         (let ((inhibit-message t))
           (org-capture-goto-last-stored))
-        (catch 'done
+        (let ((matched nil))
           (dolist (i org-gcal-fetch-file-alist)
-            (when (and (buffer-file-name)
-                       (string= (file-truename (org-gcal--calendar-file i))
-                                (file-truename (buffer-file-name)))
-                       (org-gcal--entry-under-heading-p
-                        (org-gcal--calendar-heading i)))
-              (org-entry-put (point) org-gcal-calendar-id-property (car i))
-              (org-gcal-post-at-point)
-              (throw 'done nil))))))))
+            (unless matched
+              (when (and (buffer-file-name)
+                         (string= (file-truename (org-gcal--calendar-file i))
+                                  (file-truename (buffer-file-name)))
+                         (org-gcal--entry-under-heading-p
+                          (org-gcal--calendar-heading i)))
+                (org-entry-put (point) org-gcal-calendar-id-property (car i))
+                (org-gcal-post-at-point)
+                (setq matched t)))))))))
 (defun org-gcal--refile-post ()
   "Create gcal event for headline when refiled into a gcal Org file."
   (unless (or
@@ -2420,16 +2421,18 @@ Returns a ‘deferred’ object that can be used to wait for completion."
                 (org-entry-get (point) org-gcal-entry-id-property)))
     (save-excursion
       (save-window-excursion
-        (catch ‘done
+        (let ((matched nil))
           (dolist (i org-gcal-fetch-file-alist)
-            (when (and (buffer-file-name)
-                       (string= (file-truename (org-gcal--calendar-file i))
-                                (file-truename (buffer-file-name)))
-                       (org-gcal--entry-under-heading-p
-                        (org-gcal--calendar-heading i)))
-              (org-entry-put (point) org-gcal-calendar-id-property (car i))
-              (org-gcal-post-at-point)
-              (throw ‘done nil))))))))
+            (unless matched
+              (when (and (buffer-file-name)
+                         (string= (file-truename (org-gcal--calendar-file i))
+                                  (file-truename (buffer-file-name)))
+                         (org-gcal--entry-under-heading-p
+                          (org-gcal--calendar-heading i)))
+                (org-entry-put (point) org-gcal-calendar-id-property (car i))
+                (org-gcal-post-at-point)
+                (setq matched t)))))))))
+
 (with-eval-after-load 'org-capture
   (add-hook 'org-capture-after-finalize-hook 'org-gcal--capture-post))
 (with-eval-after-load 'org-refile
