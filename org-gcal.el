@@ -302,18 +302,24 @@ Values: see ‘org-gcal-managed-newly-fetched-mode’."
           (const :tag "Prompt whether to push to Google Calendar, even during syncs" 'prompt-sync)
           (const :tag "Always push to Google Calendar" 'always-push)))
 
-(defcustom org-gcal-recurring-events-mode 'top-level
+(defcustom org-gcal-recurring-events-mode ‘top-level
   "How to treat instances of recurring events not already fetched.
 
 - ‘top-level’: insert all instances at the top level of the appropriate file for
   the calendar ID in ‘org-gcal-fetch-file-alist’.
 - ‘nested’: insert instances of a recurring event under the Org-mode headline
   containing the parent event. If a headline for the parent event doesn’t exist,
-  it will be created."
-  :group 'org-gcal
-  :type '(choice
-          (const :tag "Insert at top level" 'top-level)
-          (const :tag "Insert under headline for parent event" 'nested)))
+  it will be created.
+- ‘instances’: dual-pass sync.  Pass 1 fetches master events (singleEvents=false)
+  and creates parent headings with inactive timestamps and repeaters.  Pass 2
+  fetches all instances (singleEvents=true) and inserts them as child headings
+  with active timestamps under the parent.  Cancelled instances are removed.
+  Non-recurring events are handled normally with active timestamps."
+  :group ‘org-gcal
+  :type ‘(choice
+          (const :tag "Insert at top level" ‘top-level)
+          (const :tag "Insert under headline for parent event" ‘nested)
+          (const :tag "Master + instances (dual-pass)" ‘instances)))
 
 (defcustom org-gcal-after-update-entry-functions nil
   "List of functions to run just before ‘org-gcal--update-entry’ returns.
@@ -403,7 +409,9 @@ Returns a URL for recurrent event EVENT-ID on calendar CALENDAR-ID."
   ;; Optional marker pointing to entry-id.
   marker
   ;; Optional Event resource fetched from server.
-  event)
+  event
+  ;; When non-nil, use inactive timestamps for this entry.
+  inactive)
 
 (persist-defvar
   org-gcal--sync-tokens nil
@@ -482,36 +490,55 @@ SKIP-EXPORT.  Set SILENT to non-nil to inhibit notifications."
   "Sync events for CALENDAR-ID-FILE
 
 CALENDAR-ID-FILE is a cons in ‘org-gcal-fetch-file-alist’, for which see."
-  (org-gcal--sync-calendar-events
-   calendar-id-file skip-export silent nil up-time down-time nil))
+  (if (eq org-gcal-recurring-events-mode ‘instances)
+      ;; Dual-pass: masters first, then instances.
+      (deferred:$
+       (org-gcal--sync-calendar-events
+        calendar-id-file skip-export silent nil up-time down-time nil
+        :masters)
+       (deferred:nextc it
+                       (lambda (_)
+                         (org-gcal--sync-calendar-events
+                          calendar-id-file skip-export silent nil up-time down-time nil
+                          :instances))))
+    (org-gcal--sync-calendar-events
+     calendar-id-file skip-export silent nil up-time down-time nil nil)))
 
 (defun org-gcal--sync-calendar-events
     (calendar-id-file skip-export silent page-token up-time down-time
-                      parent-events)
-  "Sync events for CALENDAR-ID-FILE
+                      parent-events &optional instances-pass)
+  "Sync events for CALENDAR-ID-FILE.
 
-CALENDAR-ID-FILE is a cons in ‘org-gcal-fetch-file-alist’, for which see."
+CALENDAR-ID-FILE is a cons in ‘org-gcal-fetch-file-alist’, for which see.
+INSTANCES-PASS is nil for legacy, :masters for pass 1, :instances for pass 2."
   (let* ((calendar-id (car calendar-id-file))
          (calendar-file (org-gcal--calendar-file calendar-id-file))
-         (page-token-cons '(dummy)))
+         (page-token-cons ‘(dummy))
+         (token-key (if (eq instances-pass :instances)
+                        (concat calendar-id "/instances")
+                      calendar-id))
+         (single-events (eq instances-pass :instances)))
     (deferred:$
-     (org-gcal--sync-request-events calendar-id page-token up-time down-time)
+     (org-gcal--sync-request-events calendar-id page-token up-time down-time
+                                    token-key single-events)
      (deferred:nextc it
                      (lambda (response)
                        (let ((retry-fn
                               (lambda ()
                                 (org-gcal--sync-calendar-events
                                  calendar-id-file skip-export silent page-token
-                                 up-time down-time parent-events))))
+                                 up-time down-time parent-events instances-pass))))
                          (org-gcal--sync-handle-response
-                          response calendar-id-file page-token-cons down-time retry-fn))))
+                          response calendar-id-file page-token-cons down-time
+                          retry-fn token-key))))
      (deferred:nextc it
                      (lambda (events)
                        (org-gcal--sync-handle-events calendar-id calendar-file
                                                      events nil up-time down-time
                                                      parent-events
                                                      (org-gcal--calendar-heading
-                                                      calendar-id-file))))
+                                                      calendar-id-file)
+                                                     instances-pass)))
      (deferred:nextc it
                      (lambda (entries)
                        (org-gcal--sync-update-entries calendar-id entries skip-export)))
@@ -522,7 +549,7 @@ CALENDAR-ID-FILE is a cons in ‘org-gcal-fetch-file-alist’, for which see."
                          (if pt
                              (org-gcal--sync-calendar-events
                               calendar-id-file skip-export silent pt
-                              up-time down-time parent-events)
+                              up-time down-time parent-events instances-pass)
                            (deferred:succeed nil))))))))
 
 (defun org-gcal--sync-instances
@@ -588,9 +615,12 @@ CALENDAR-ID-FILE is a cons in ‘org-gcal-fetch-file-alist’, for which see."
                        (org-gcal--sync-update-entries calendar-id entries skip-export))))))
 
 (defun org-gcal--sync-request-events
-    (calendar-id page-token up-time down-time)
-  "Request events on CALENDAR-ID, using PAGE-TOKEN if present."
-  (let ((token (org-gcal--get-access-token calendar-id)))
+    (calendar-id page-token up-time down-time &optional token-key single-events)
+  "Request events on CALENDAR-ID, using PAGE-TOKEN if present.
+TOKEN-KEY overrides the sync token lookup key (default: CALENDAR-ID).
+When SINGLE-EVENTS is non-nil, pass singleEvents=true to the API."
+  (let ((token (org-gcal--get-access-token calendar-id))
+        (tk (or token-key calendar-id)))
    (request-deferred
     (org-gcal-events-url calendar-id)
     :type "GET"
@@ -600,25 +630,26 @@ CALENDAR-ID-FILE is a cons in ‘org-gcal-fetch-file-alist’, for which see."
     :params
     (append
      `(("access_token" . ,token))
+    (when single-events ‘(("singleEvents" . "true")))
     (when org-gcal-local-timezone `(("timeZone" . ,org-gcal-local-timezone)))
     (seq-let [expires sync-token]
         ;; Ensure ‘org-gcal--sync-tokens-get’ return value is actually a list
         ;; before passing to ‘seq-let’.
         (when-let
-            ((x (org-gcal--sync-tokens-get calendar-id))
+            ((x (org-gcal--sync-tokens-get tk))
              ((listp x)))
           x)
       (cond
-       ;; Don't use the sync token if it's expired.
+       ;; Don’t use the sync token if it’s expired.
        ((and expires sync-token
              (time-less-p (current-time) expires))
         `(("syncToken" . ,sync-token)))
        (t
-        (setf (org-gcal--sync-tokens-get calendar-id 'remove) nil)
+        (setf (org-gcal--sync-tokens-get tk ‘remove) nil)
         `(("timeMin" . ,(org-gcal--format-time2iso up-time))
           ("timeMax" . ,(org-gcal--format-time2iso down-time))))))
      (when page-token `(("pageToken" . ,page-token))))
-    :parser 'org-gcal--json-read)))
+    :parser ‘org-gcal--json-read)))
 
 (defun org-gcal--sync-request-instances
     (calendar-id event-id up-time down-time page-token)
@@ -639,16 +670,19 @@ CALENDAR-ID-FILE is a cons in ‘org-gcal-fetch-file-alist’, for which see."
      :parser 'org-gcal--json-read)))
 
 (defun org-gcal--sync-handle-response
-    (response calendar-id-file page-token-cons down-time retry-fn)
-  "Handle RESPONSE in ‘org-gcal--sync-calendar' for CALENDAR-ID-FILE.
+    (response calendar-id-file page-token-cons down-time retry-fn
+              &optional token-key)
+  "Handle RESPONSE in ‘org-gcal--sync-calendar’ for CALENDAR-ID-FILE.
 
 Update PAGE-TOKEN from the response, and return a ‘deferred’ list of event
-objects for further processing."
+objects for further processing.
+TOKEN-KEY overrides the sync token lookup key (default: calendar-id)."
   (let
       ((data (request-response-data response))
        (status-code (request-response-status-code response))
        (error-thrown (request-response-error-thrown response))
-       (calendar-id (car calendar-id-file)))
+       (calendar-id (car calendar-id-file))
+       (tk (or token-key (car calendar-id-file))))
     (cond
      ;; If there is no network connectivity, the response will
      ;; not include a status code.
@@ -674,7 +708,7 @@ objects for further processing."
      ((eq 410 status-code)
       (org-gcal--notify "Received HTTP 410"
                         "Calendar API sync token expired - performing full sync.")
-      (setf (org-gcal--sync-tokens-get calendar-id 'remove) nil)
+      (setf (org-gcal--sync-tokens-get tk ‘remove) nil)
       (funcall retry-fn))
      ;; We got some 2xx response, but for some reason no
      ;; message body.
@@ -697,22 +731,22 @@ objects for further processing."
       (nconc page-token-cons (list (plist-get data :nextPageToken)))
       (let ((next-sync-token (plist-get data :nextSyncToken)))
         (when next-sync-token
-          (setf (org-gcal--sync-tokens-get calendar-id)
+          (setf (org-gcal--sync-tokens-get tk)
                 (list
                  ;; The first element is the expiration time of
                  ;; the sync token. Note that, if the expiration
-                 ;; time already exists, we don't update it. We
+                 ;; time already exists, we don’t update it. We
                  ;; want to expire the token according to the
                  ;; time of the previous full sync.
                  (or
-                  (car (org-gcal--sync-tokens-get calendar-id))
+                  (car (org-gcal--sync-tokens-get tk))
                   down-time)
                  next-sync-token))))
       (org-gcal--filter (plist-get data :items))))))
 
 (defun org-gcal--sync-handle-events
     (calendar-id calendar-file events recurring-instances? up-time down-time
-                 parent-events &optional calendar-heading)
+                 parent-events &optional calendar-heading instances-pass)
   "Handle a list of EVENTS fetched from the Calendar API.
 
 CALENDAR-ID and CALENDAR-FILE are defined in ‘org-gcal--sync-inner’.
@@ -720,36 +754,79 @@ RECURRING-INSTANCES? is t if we’re currently fetching instances of recurring
 events and nil otherwise.
 CALENDAR-HEADING, when non-nil, is a string naming a heading under which
 new events should be inserted as children.
+INSTANCES-PASS, when non-nil, is one of:
+  :masters  — Pass 1 of `instances’ mode (master events, inactive timestamps)
+  :instances — Pass 2 of `instances’ mode (individual instances as children)
 
 Any parent recurring events are appended in-place to the list PARENT-EVENTS."
   (with-current-buffer (find-file-noselect calendar-file)
-    ;; Expand multi-BYDAY weekly recurring events into per-day entries.
-    (setq events (org-gcal--expand-multi-day-events events calendar-id))
+    ;; Expand multi-BYDAY weekly recurring events into per-day entries,
+    ;; but skip in instances mode (instances naturally group under one parent).
+    (unless (eq instances-pass :masters)
+      (setq events (org-gcal--expand-multi-day-events events calendar-id)))
     (cl-loop
      for event across events
      if
      (let* ((entry-id (org-gcal--format-entry-id
                        calendar-id (plist-get event :id)))
-            (marker (org-gcal--id-find entry-id 'markerp)))
+            (recurring-event-id (plist-get event :recurringEventId))
+            (recurrence (plist-get event :recurrence))
+            (marker (org-gcal--id-find entry-id ‘markerp))
+            ;; In instances mode, master recurring events get inactive
+            ;; timestamps; non-recurring events stay active.
+            (inactive-p (and (eq instances-pass :masters) recurrence)))
        (cond
-        ;; Skip exception instances of recurring events unless we already
-        ;; track them from a previous sync.  With singleEvents=False the API
-        ;; only returns master events and exception instances.
-        ((and (plist-get event :recurringEventId)
+        ;; --- instances mode: pass 2 (instances) ---
+        ;; Skip non-recurring events (handled in pass 1).
+        ((and (eq instances-pass :instances)
+              (not recurring-event-id))
+         nil)
+        ;; Instance of a recurring event: insert as child of parent heading.
+        ((and (eq instances-pass :instances)
+              recurring-event-id
+              (not marker))
+         (let* ((parent-entry-id
+                 (org-gcal--format-entry-id calendar-id recurring-event-id))
+                (parent-marker (org-gcal--id-find parent-entry-id ‘markerp)))
+           (when parent-marker
+             ;; Don’t insert cancelled instances.
+             (unless (org-gcal--event-cancelled-p event)
+               (atomic-change-group
+                 (org-with-point-at parent-marker
+                   (let ((level (org-current-level)))
+                     (org-end-of-subtree t t)
+                     (unless (bolp) (insert "\n"))
+                     (insert (make-string (1+ level) ?*) " ")
+                     (org-gcal--update-entry calendar-id event ‘newly-fetched)
+                     (org-entry-put (point) org-gcal-managed-property
+                                    org-gcal-managed-newly-fetched-mode)))))
+             (when parent-marker (set-marker parent-marker nil)))
+           nil))
+        ;; --- instances mode: pass 1 (masters) ---
+        ;; Skip exception instances (have recurringEventId but no recurrence)
+        ;; unless already tracked.
+        ((and (not (eq instances-pass :instances))
+              recurring-event-id
               (not marker))
          nil)
         ;; Cancelled events may lack start/end fields.  If we have an
         ;; existing heading, just mark it cancelled without a full update.
+        ;; In instances pass 2, also remove the child heading’s subtree.
         ((and marker (org-gcal--event-cancelled-p event))
          (org-with-point-at marker
-           (org-gcal--handle-cancelled-entry))
+           (if (eq instances-pass :instances)
+               ;; Remove the cancelled instance heading entirely.
+               (delete-region (org-entry-beginning-position)
+                              (org-entry-end-position))
+             (org-gcal--handle-cancelled-entry)))
          nil)
         ;; If event is present, collect it for later processing.
         (marker
          (org-gcal--event-entry-create
           :entry-id entry-id
           :marker marker
-          :event event))
+          :event event
+          :inactive inactive-p))
         ;; If event doesn’t already exist and is outside of the
         ;; range [‘org-gcal-up-days’, ‘org-gcal-down-days’], ignore
         ;; it. This is necessary because when called with
@@ -761,7 +838,7 @@ Any parent recurring events are appended in-place to the list PARENT-EVENTS."
         ;; date is the first occurrence, not the current one.
         ;; Use condition-case because pre-epoch dates (e.g. birthdays)
         ;; can fail to parse on some platforms.
-        ((and (not (plist-get event :recurrence))
+        ((and (not recurrence)
               (when-let*
                   ((up-time) (down-time)
                    (start (plist-get event :start))
@@ -798,12 +875,14 @@ Any parent recurring events are appended in-place to the list PARENT-EVENTS."
                    (org-end-of-subtree t t)
                    (unless (bolp) (insert "\n"))
                    (insert (make-string (1+ level) ?*) " ")
-                   (org-gcal--update-entry calendar-id event 'newly-fetched)
+                   (org-gcal--update-entry calendar-id event ‘newly-fetched
+                                           inactive-p)
                    (org-entry-put (point) org-gcal-managed-property
                                   org-gcal-managed-newly-fetched-mode)))
              (org-with-point-at (point-max)
                (insert "\n* ")
-               (org-gcal--update-entry calendar-id event 'newly-fetched)
+               (org-gcal--update-entry calendar-id event ‘newly-fetched
+                                       inactive-p)
                (org-entry-put (point) org-gcal-managed-property
                               org-gcal-managed-newly-fetched-mode))))
          nil)))
@@ -821,7 +900,8 @@ have been moved from the default fetch file.  CALENDAR-ID is defined in
                     (deferred:$
                      (let ((marker (or (org-gcal--event-entry-marker entry)
                                        (org-gcal--id-find (org-gcal--event-entry-entry-id entry))))
-                           (event (org-gcal--event-entry-event entry)))
+                           (event (org-gcal--event-entry-event entry))
+                           (inactive-p (org-gcal--event-entry-inactive entry)))
                        (when (and (markerp marker)
                                   (not (marker-buffer marker)))
                          (error "org-gcal: marker's buffer for entry %s has been killed"
@@ -834,7 +914,8 @@ have been moved from the default fetch file.  CALENDAR-ID is defined in
                          (set-marker marker nil)
                          (if (and skip-export event)
                              (progn
-                               (org-gcal--update-entry calendar-id event 'update-existing)
+                               (org-gcal--update-entry calendar-id event
+                                                       'update-existing inactive-p)
                                (deferred:succeed nil))
                            (org-gcal-post-at-point nil skip-export
                                                    (org-gcal--sync-get-update-existing)))))
@@ -1806,8 +1887,12 @@ passed through unchanged."
                (push new-event result)))))))
     (vconcat (nreverse result))))
 
-(defun org-gcal--format-iso2org (str &optional tz repeater)
+(defun org-gcal--format-iso2org (str &optional tz repeater inactive)
+  "Format ISO date STR as an Org timestamp.
+When INACTIVE is non-nil, use square brackets instead of angle brackets."
   (let* ((plst (org-gcal--parse-date str))
+         (open (if inactive "[" "<"))
+         (close (if inactive "]" ">"))
          (date-part
           (condition-case nil
               (let ((seconds (org-gcal--time-to-seconds plst)))
@@ -1830,9 +1915,9 @@ passed through unchanged."
                            (plist-get plst :min))
                  (format "%04d-%02d-%02d %s" y m d dow)))))))
     (concat
-     "<" date-part
+     open date-part
      (if (and repeater (not (string= repeater ""))) (concat " " repeater) "")
-     ">")))
+     close)))
 
 (defun org-gcal--make-link-string (url title)
   "Return an Org link string for URL and TITLE across Org versions."
@@ -1888,7 +1973,7 @@ passed through unchanged."
       (format-time-string "%Y-%m-%dT%H:%M:%S%z" (parse-iso8601-time-string date-time) local-timezone)
     date-time))
 
-(defun org-gcal--update-entry (calendar-id event &optional update-mode)
+(defun org-gcal--update-entry (calendar-id event &optional update-mode inactive)
   "Update the entry at the current heading with information from EVENT.
 
 EVENT is parsed from the Calendar API JSON response using ‘org-gcal--json-read’.
@@ -1896,9 +1981,12 @@ CALENDAR-ID must be passed as well. Point must be located on an Org-mode heading
 line or an error will be thrown. Point is not preserved.
 
 If UPDATE-MODE is passed, then the functions in
-‘org-gcal-after-update-entry-functions' are called in order with the same
+‘org-gcal-after-update-entry-functions’ are called in order with the same
 arguments as passed to this function and the point moved to the beginning of the
-heading."
+heading.
+
+When INACTIVE is non-nil, use inactive timestamps (square brackets) and skip
+SCHEDULED.  Used for master recurring events in `instances’ mode."
   (unless (org-at-heading-p)
     (user-error "Must be on Org-mode heading."))
   (let* ((smry  (plist-get event :summary))
@@ -1997,9 +2085,11 @@ heading."
     (insert (format ":%s:" org-gcal-drawer-name))
     (newline)
     (let*
-        ((timestamp
+        ((open (if inactive "[" "<"))
+         (close (if inactive "]" ">"))
+         (timestamp
           (if (or (string= start end) (org-gcal--alldayp start end))
-              (org-gcal--format-iso2org start nil repeater)
+              (org-gcal--format-iso2org start nil repeater inactive)
             (if (and
                  (= (plist-get (org-gcal--parse-date start) :year)
                     (plist-get (org-gcal--parse-date end)   :year))
@@ -2007,17 +2097,20 @@ heading."
                     (plist-get (org-gcal--parse-date end)   :mon))
                  (= (plist-get (org-gcal--parse-date start) :day)
                     (plist-get (org-gcal--parse-date end)   :day)))
-                (format "<%s-%s%s>"
+                (format "%s%s-%s%s%s"
+                        open
                         (org-gcal--format-date start "%Y-%m-%d %a %H:%M")
                         (org-gcal--format-date end "%H:%M")
-                        (if repeater (concat " " repeater) ""))
+                        (if repeater (concat " " repeater) "")
+                        close)
               (format "%s--%s"
-                      (org-gcal--format-iso2org start nil repeater)
+                      (org-gcal--format-iso2org start nil repeater inactive)
                       (org-gcal--format-iso2org
                        (if (< 11 (length end))
                            end
-                         (org-gcal--iso-previous-day end))))))))
-      (if (org-element-property :scheduled elem)
+                         (org-gcal--iso-previous-day end))
+                       nil nil inactive))))))
+      (if (and (not inactive) (org-element-property :scheduled elem))
           ;; Ensure CLOSED timestamp isn’t wiped out by ‘org-gcal-sync’ (see
           ;; https://github.com/kidd/org-gcal.el/issues/218).
           (let ((org-closed-keep-when-no-todo t))
