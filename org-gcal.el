@@ -129,6 +129,19 @@ CALENDAR-ID-FILE is a cons from `org-gcal-fetch-file-alist'."
   (let ((val (cdr calendar-id-file)))
     (when (consp val) (cdr val))))
 
+(defun org-gcal--entry-under-heading-p (heading)
+  "Return non-nil if point is under a top-level heading titled HEADING.
+If HEADING is nil, return t (matches any position, for backward
+compatibility with configs that don't specify headings)."
+  (if (null heading)
+      t
+    (save-excursion
+      (condition-case nil
+          (progn
+            (while (org-up-heading-safe))
+            (string= heading (org-get-heading t t t t)))
+        (error nil)))))
+
 (defcustom org-gcal-account nil
   "Google account email used for OAuth authentication.
 All calendars in `org-gcal-fetch-file-alist' share a single OAuth
@@ -2386,16 +2399,20 @@ Returns a ‘deferred’ object that can be used to wait for completion."
       (save-window-excursion
         (let ((inhibit-message t))
           (org-capture-goto-last-stored))
-        (dolist (i org-gcal-fetch-file-alist)
-          (when (and (buffer-file-name)
-                     (string= (file-truename (org-gcal--calendar-file i))
-                              (file-truename (buffer-file-name))))
-            (org-entry-put (point) org-gcal-calendar-id-property (car i))
-            (org-gcal-post-at-point)))))))
+        (catch 'done
+          (dolist (i org-gcal-fetch-file-alist)
+            (when (and (buffer-file-name)
+                       (string= (file-truename (org-gcal--calendar-file i))
+                                (file-truename (buffer-file-name)))
+                       (org-gcal--entry-under-heading-p
+                        (org-gcal--calendar-heading i)))
+              (org-entry-put (point) org-gcal-calendar-id-property (car i))
+              (org-gcal-post-at-point)
+              (throw 'done nil))))))))
 (defun org-gcal--refile-post ()
   "Create gcal event for headline when refiled into a gcal Org file."
   (unless (or
-           ;; Refile from capture is handled by ‘org-gcal--capture-post'.
+           ;; Refile from capture is handled by ‘org-gcal--capture-post’.
            (bound-and-true-p org-capture-is-refiling)
            ;; Don’t POST unnecessarily if the headline being refiled is already
            ;; a gcal event.
@@ -2403,12 +2420,16 @@ Returns a ‘deferred’ object that can be used to wait for completion."
                 (org-entry-get (point) org-gcal-entry-id-property)))
     (save-excursion
       (save-window-excursion
-        (dolist (i org-gcal-fetch-file-alist)
-          (when (and (buffer-file-name)
-                     (string= (file-truename (org-gcal--calendar-file i))
-                              (file-truename (buffer-file-name))))
-            (org-entry-put (point) org-gcal-calendar-id-property (car i))
-            (org-gcal-post-at-point)))))))
+        (catch ‘done
+          (dolist (i org-gcal-fetch-file-alist)
+            (when (and (buffer-file-name)
+                       (string= (file-truename (org-gcal--calendar-file i))
+                                (file-truename (buffer-file-name)))
+                       (org-gcal--entry-under-heading-p
+                        (org-gcal--calendar-heading i)))
+              (org-entry-put (point) org-gcal-calendar-id-property (car i))
+              (org-gcal-post-at-point)
+              (throw ‘done nil))))))))
 (with-eval-after-load 'org-capture
   (add-hook 'org-capture-after-finalize-hook 'org-gcal--capture-post))
 (with-eval-after-load 'org-refile
