@@ -305,16 +305,16 @@ Values: see ‘org-gcal-managed-newly-fetched-mode’."
 (defcustom org-gcal-recurring-events-mode ‘top-level
   "How to treat instances of recurring events not already fetched.
 
-- ‘top-level’: insert all instances at the top level of the appropriate file for
-  the calendar ID in ‘org-gcal-fetch-file-alist’.
-- ‘nested’: insert instances of a recurring event under the Org-mode headline
-  containing the parent event. If a headline for the parent event doesn’t exist,
+- `top-level’: insert all instances at the top level of the appropriate file for
+  the calendar ID in `org-gcal-fetch-file-alist’.
+- `nested’: insert instances of a recurring event under the Org-mode headline
+  containing the parent event.  If a headline for the parent event doesn’t exist,
   it will be created.
-- :instances — dual-pass sync.  Pass 1 fetches master events (singleEvents=false)
-  and creates parent headings with inactive timestamps and repeaters.  Pass 2
-  fetches all instances (singleEvents=true) and inserts them as child headings
-  with active timestamps under the parent.  Cancelled instances are removed.
-  Non-recurring events are handled normally with active timestamps."
+- `:instances’ -- dual-pass sync.  Pass 1 fetches master events
+  (singleEvents=false) and creates parent headings with inactive timestamps and
+  repeaters.  Pass 2 fetches all instances (singleEvents=true) and inserts them
+  as child headings with active timestamps under the parent.  Cancelled instances
+  are removed.  Non-recurring events are handled normally with active timestamps."
   :group ‘org-gcal
   :type ‘(choice
           (const :tag "Insert at top level" top-level)
