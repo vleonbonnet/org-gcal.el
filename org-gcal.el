@@ -226,7 +226,7 @@ The events will always be marked cancelled before they’re removed if
   :group 'org-gcal
   :type '(choice
           (const :tag "Never remove" nil)
-          (const :tag "Prompt whether to remove" 'ask)
+          (const :tag "Prompt whether to remove" ask)
           (const :tag "Always remove without prompting" t)))
 
 (defcustom org-gcal-remove-events-with-cancelled-todo nil
@@ -297,10 +297,10 @@ Values: see ‘org-gcal-managed-newly-fetched-mode’."
 
   :group 'org-gcal
   :type '(choice
-          (const :tag "Never push to Google Calendar" 'never-push)
-          (const :tag "Prompt whether to push to Google Calendar if run manually, never push during syncs" 'prompt)
-          (const :tag "Prompt whether to push to Google Calendar, even during syncs" 'prompt-sync)
-          (const :tag "Always push to Google Calendar" 'always-push)))
+          (const :tag "Never push to Google Calendar" never-push)
+          (const :tag "Prompt whether to push to Google Calendar if run manually, never push during syncs" prompt)
+          (const :tag "Prompt whether to push to Google Calendar, even during syncs" prompt-sync)
+          (const :tag "Always push to Google Calendar" always-push)))
 
 (defcustom org-gcal-recurring-events-mode ‘top-level
   "How to treat instances of recurring events not already fetched.
@@ -310,16 +310,16 @@ Values: see ‘org-gcal-managed-newly-fetched-mode’."
 - ‘nested’: insert instances of a recurring event under the Org-mode headline
   containing the parent event. If a headline for the parent event doesn’t exist,
   it will be created.
-- ‘instances’: dual-pass sync.  Pass 1 fetches master events (singleEvents=false)
+- :instances — dual-pass sync.  Pass 1 fetches master events (singleEvents=false)
   and creates parent headings with inactive timestamps and repeaters.  Pass 2
   fetches all instances (singleEvents=true) and inserts them as child headings
   with active timestamps under the parent.  Cancelled instances are removed.
   Non-recurring events are handled normally with active timestamps."
   :group ‘org-gcal
   :type ‘(choice
-          (const :tag "Insert at top level" ‘top-level)
-          (const :tag "Insert under headline for parent event" ‘nested)
-          (const :tag "Master + instances (dual-pass)" ‘instances)))
+          (const :tag "Insert at top level" top-level)
+          (const :tag "Insert under headline for parent event" nested)
+          (const :tag "Master + instances (dual-pass)" :instances)))
 
 (defcustom org-gcal-after-update-entry-functions nil
   "List of functions to run just before ‘org-gcal--update-entry’ returns.
@@ -490,7 +490,7 @@ SKIP-EXPORT.  Set SILENT to non-nil to inhibit notifications."
   "Sync events for CALENDAR-ID-FILE
 
 CALENDAR-ID-FILE is a cons in ‘org-gcal-fetch-file-alist’, for which see."
-  (if (eq org-gcal-recurring-events-mode ‘instances)
+  (if (eq org-gcal-recurring-events-mode :instances)
       ;; Dual-pass: masters first, then instances.
       (deferred:$
        (org-gcal--sync-calendar-events
@@ -513,7 +513,7 @@ CALENDAR-ID-FILE is a cons in ‘org-gcal-fetch-file-alist’, for which see.
 INSTANCES-PASS is nil for legacy, :masters for pass 1, :instances for pass 2."
   (let* ((calendar-id (car calendar-id-file))
          (calendar-file (org-gcal--calendar-file calendar-id-file))
-         (page-token-cons ‘(dummy))
+         (page-token-cons (list ‘dummy))
          (token-key (if (eq instances-pass :instances)
                         (concat calendar-id "/instances")
                       calendar-id))
@@ -560,7 +560,7 @@ INSTANCES-PASS is nil for legacy, :masters for pass 1, :instances for pass 2."
 CALENDAR-ID-FILE is a cons in ‘org-gcal-fetch-file-alist’, for which see."
   (let* ((calendar-id (car calendar-id-file))
          (calendar-file (org-gcal--calendar-file calendar-id-file))
-         (page-token-cons '(dummy)))
+         (page-token-cons (list 'dummy)))
     (deferred:$
      (org-gcal--sync-request-instances calendar-id parent-event-id
                                        up-time down-time page-token)
