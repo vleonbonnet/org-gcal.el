@@ -465,6 +465,11 @@ SKIP-EXPORT.  Set SILENT to non-nil to inhibit notifications."
                                                  up-time down-time)
                         (deferred:nextc it
                                         (lambda (_)
+                                          ;; Save the calendar file after syncing.
+                                          (let ((file (org-gcal--calendar-file calendar-id-file)))
+                                            (when-let* ((buf (find-buffer-visiting file)))
+                                              (with-current-buffer buf
+                                                (when (buffer-modified-p) (save-buffer)))))
                                           (cl-incf cal-count)
                                           (message "org-gcal: syncing %d calendars... [%d/%d]"
                                                    cal-total cal-count cal-total)
