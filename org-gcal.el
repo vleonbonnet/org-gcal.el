@@ -761,6 +761,31 @@ TOKEN-KEY overrides the sync token lookup key (default: calendar-id)."
                  next-sync-token))))
       (org-gcal--filter (plist-get data :items))))))
 
+(defun org-gcal--find-or-create-calendar-heading (calendar-id heading)
+  "Find or create the org heading for CALENDAR-ID named HEADING.
+Uses the `org-gcal-calendar' property to identify the heading uniquely,
+avoiding collisions with user headings that have the same name.
+Returns the position of the heading."
+  (let ((pos nil))
+    ;; Search for a heading with our marker property.
+    (org-with-wide-buffer
+     (goto-char (point-min))
+     (while (and (not pos) (re-search-forward
+                            (format "^\\*+ %s" (regexp-quote heading)) nil t))
+       (org-back-to-heading t)
+       (when (equal (org-entry-get (point) "org-gcal-calendar") calendar-id)
+         (setq pos (point)))
+       (outline-next-heading)))
+    (unless pos
+      ;; Create the heading at end of buffer with the marker property.
+      (goto-char (point-max))
+      (unless (bolp) (insert "\n"))
+      (insert "* " heading "\n")
+      (forward-line -1)
+      (org-entry-put (point) "org-gcal-calendar" calendar-id)
+      (setq pos (point)))
+    pos))
+
 (defun org-gcal--sync-handle-events
     (calendar-id calendar-file events recurring-instances? up-time down-time
                  parent-events &optional calendar-heading instances-pass)
@@ -878,15 +903,8 @@ Any parent recurring events are appended in-place to the list PARENT-EVENTS."
          ;; heading; otherwise append at top level.
          (atomic-change-group
            (if calendar-heading
-               (let ((pos (org-find-exact-headline-in-buffer
-                           calendar-heading)))
-                 (unless pos
-                   ;; Create the heading if it doesn't exist yet.
-                   (goto-char (point-max))
-                   (unless (bolp) (insert "\n"))
-                   (insert "* " calendar-heading "\n")
-                   (setq pos (org-find-exact-headline-in-buffer
-                              calendar-heading)))
+               (let ((pos (org-gcal--find-or-create-calendar-heading
+                           calendar-id calendar-heading)))
                  (goto-char pos)
                  (let ((level (org-current-level)))
                    (org-end-of-subtree t t)
