@@ -560,7 +560,7 @@ INSTANCES-PASS is nil for legacy, :masters for pass 1, :instances for pass 2."
 CALENDAR-ID-FILE is a cons in ‘org-gcal-fetch-file-alist’, for which see."
   (let* ((calendar-id (car calendar-id-file))
          (calendar-file (org-gcal--calendar-file calendar-id-file))
-         (page-token-cons (list 'dummy)))
+         (page-token-cons (list nil)))
     (deferred:$
      (org-gcal--sync-request-instances calendar-id parent-event-id
                                        up-time down-time page-token)
