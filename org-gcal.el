@@ -459,14 +459,13 @@ SKIP-EXPORT.  Set SILENT to non-nil to inhibit notifications."
                        (deferred:$
                         (org-gcal--sync-calendar calendar-id-file skip-export silent
                                                  up-time down-time)
-                        (deferred:succeed nil)
                         (deferred:nextc it
                                         (lambda (_)
                                           (org-gcal--notify "Completed event fetching ."
                                                             (concat "Events fetched into\n"
                                                                     (org-gcal--calendar-file calendar-id-file))
                                                             silent)
-                                          (deferred:succeed nil))))))
+                                          nil)))))
       ;; After syncing new events to Org, sync existing events in Org.
       (deferred:nextc it
                       (lambda (_)
