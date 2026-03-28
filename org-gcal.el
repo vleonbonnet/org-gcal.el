@@ -451,7 +451,11 @@ SKIP-EXPORT.  Set SILENT to non-nil to inhibit notifications."
           (find-file-noselect (org-gcal--calendar-file i))
         (org-gcal--archive-old-event))))
   (let ((up-time (org-gcal--up-time))
-        (down-time (org-gcal--down-time)))
+        (down-time (org-gcal--down-time))
+        (start-time (current-time))
+        (cal-count 0)
+        (cal-total (length org-gcal-fetch-file-alist)))
+    (message "org-gcal: syncing %d calendars..." cal-total)
     (deferred:try
      (deferred:$
       (deferred:loop org-gcal-fetch-file-alist
@@ -461,10 +465,9 @@ SKIP-EXPORT.  Set SILENT to non-nil to inhibit notifications."
                                                  up-time down-time)
                         (deferred:nextc it
                                         (lambda (_)
-                                          (org-gcal--notify "Completed event fetching ."
-                                                            (concat "Events fetched into\n"
-                                                                    (org-gcal--calendar-file calendar-id-file))
-                                                            silent)
+                                          (cl-incf cal-count)
+                                          (message "org-gcal: syncing %d calendars... [%d/%d]"
+                                                   cal-total cal-count cal-total)
                                           nil)))))
       ;; After syncing new events to Org, sync existing events in Org.
       (deferred:nextc it
@@ -478,7 +481,10 @@ SKIP-EXPORT.  Set SILENT to non-nil to inhibit notifications."
                                 (org-gcal--sync-unlock)
                                 (org-gcal-sync-buffer skip-export silent 'filter-time
                                                       'filter-managed))))
-                           (org-generic-id-files))))))
+                           (org-generic-id-files)))
+                        (message "org-gcal: syncing %d calendars... done (%.1fs)"
+                                 cal-total
+                                 (float-time (time-subtract (current-time) start-time))))))
      :finally
      (lambda ()
        (org-gcal--sync-unlock)))))
