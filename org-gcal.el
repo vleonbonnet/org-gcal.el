@@ -107,7 +107,7 @@ of the form (CALENDAR-ID . TARGET), where TARGET is either:
 When HEADING is specified and does not yet exist in FILE, it is created
 as a top-level heading automatically.
 
-For each calendar-id, `org-gcal-fetch’ and `org-gcal-sync’ will retrieve
+For each calendar-id, `org-gcal-fetch' and `org-gcal-sync' will retrieve
 new events on the calendar and insert them into the file."
   :group 'org-gcal
   :type '(alist :key-type (string :tag "Calendar Id")
@@ -200,8 +200,8 @@ calendar:
   :type 'boolean)
 
 (defcustom org-gcal-update-cancelled-events-with-todo t
-  "If ‘t’, mark cancelled events with the TODO keyword in
-‘org-gcal-cancelled-todo-keyword’."
+  "If 't', mark cancelled events with the TODO keyword in
+'org-gcal-cancelled-todo-keyword'."
   :group 'org-gcal
   :type 'boolean)
 
@@ -221,8 +221,8 @@ database name', which can be found in
 (defcustom org-gcal-remove-api-cancelled-events 'ask
   "Whether to remove Org-mode headlines for events cancelled in Google Calendar.
 
-The events will always be marked cancelled before they’re removed if
-‘org-gcal-update-cancelled-events-with-todo’ is true."
+The events will always be marked cancelled before they're removed if
+'org-gcal-update-cancelled-events-with-todo' is true."
   :group 'org-gcal
   :type '(choice
           (const :tag "Never remove" nil)
@@ -231,34 +231,34 @@ The events will always be marked cancelled before they’re removed if
 
 (defcustom org-gcal-remove-events-with-cancelled-todo nil
   "Whether to attempt to remove Org-mode headlines for cancelled events.
-Specifically effects events marked with ‘org-gcal-cancelled-todo-keyword’.
+Specifically effects events marked with 'org-gcal-cancelled-todo-keyword'.
 
 By default, this is set to nil so that if you decline removing an event when
-‘org-gcal-remove-api-cancelled-events’ is set to ‘ask’, you won’t be prompted
+'org-gcal-remove-api-cancelled-events' is set to 'ask', you won't be prompted
 to remove the event again.  Set to t to override this.
 
 Note that whether a headline is removed is still controlled by
-‘org-gcal-remove-api-cancelled-events’."
+'org-gcal-remove-api-cancelled-events'."
   :group 'org-gcal
   :type 'boolean)
 
 (defcustom org-gcal-managed-newly-fetched-mode "gcal"
-  "Default value of ‘org-gcal-managed-property’ on newly-fetched events.
+  "Default value of 'org-gcal-managed-property' on newly-fetched events.
 
-This is the value set on events fetched from a calendar by ‘org-gcal-sync’ and
-‘org-gcal-fetch’.
+This is the value set on events fetched from a calendar by 'org-gcal-sync' and
+'org-gcal-fetch'.
 
 Values:
 
 - “org”: Event is intended to be managed primarily by org-gcal. These events
-  will be pushed to Google Calendar by ‘org-gcal-sync’, ‘org-gcal-sync-buffer’,
-  and ‘org-gcal-post-at-point’ if they have been modified in the Org file. If
+  will be pushed to Google Calendar by 'org-gcal-sync', 'org-gcal-sync-buffer',
+  and 'org-gcal-post-at-point' if they have been modified in the Org file. If
   the ETag is out of sync with Google Calendar, the Org headline will still be
   updated from Google Calendar.
 - “gcal”: Event is intended to be managed primarily by org-gcal. These events
   will not be pushed to Google Calendar by bulk update functions like
-  ‘org-gcal-sync’, ‘org-gcal-sync-buffer’. When running
-  ‘org-gcal-post-at-point’, the user will be prompted to approve pushing the
+  'org-gcal-sync', 'org-gcal-sync-buffer'. When running
+  'org-gcal-post-at-point', the user will be prompted to approve pushing the
   event by default."
   :group 'org-gcal
   :type '(choice
@@ -266,34 +266,34 @@ Values:
           (const :tag "Event managed in Org file" "org")))
 
 (defcustom org-gcal-managed-update-existing-mode "gcal"
-  "Default value of ‘org-gcal-managed-property’ for existing events without it.
+  "Default value of 'org-gcal-managed-property' for existing events without it.
 
 This is the value set on existing entries containing calendar events when they
-are updated by ‘org-gcal-sync’, ‘org-gcal-fetch', or ‘org-gcal-post-at-point’
-and don’t yet have a value for ‘org-gcal-managed-property’ set.
+are updated by 'org-gcal-sync', 'org-gcal-fetch', or 'org-gcal-post-at-point'
+and don't yet have a value for 'org-gcal-managed-property' set.
 
-Values: see ‘org-gcal-managed-newly-fetched-mode’."
+Values: see 'org-gcal-managed-newly-fetched-mode'."
   :group 'org-gcal
   :type '(choice
           (const :tag "Event managed on Google Calendar" "gcal")
           (const :tag "Event managed in Org file" "org")))
 
 (defcustom org-gcal-managed-create-from-entry-mode "org"
-  "Default value of ‘org-gcal-managed-property’ when creating event from entry.
+  "Default value of 'org-gcal-managed-property' when creating event from entry.
 
-This is the value set when ‘org-gcal-post-at-point’ creates a Google Calendar
-event from an Org-mode entry. This is used when ‘org-gcal-calendar-id-property’
-or ‘org-gcal-entry-id-property’ is missing from an entry. If these are present,
-‘org-gcal-managed-update-existing-mode’ is used instead.
+This is the value set when 'org-gcal-post-at-point' creates a Google Calendar
+event from an Org-mode entry. This is used when 'org-gcal-calendar-id-property'
+or 'org-gcal-entry-id-property' is missing from an entry. If these are present,
+'org-gcal-managed-update-existing-mode' is used instead.
 
-Values: see ‘org-gcal-managed-newly-fetched-mode’."
+Values: see 'org-gcal-managed-newly-fetched-mode'."
   :group 'org-gcal
   :type '(choice
           (const :tag "Event managed on Google Calendar" "gcal")
           (const :tag "Event managed in Org file" "org")))
 
 (defcustom org-gcal-managed-post-at-point-update-existing 'prompt
-  "Behavior when running ‘org-gcal-post-at-point’ on existing entries."
+  "Behavior when running 'org-gcal-post-at-point' on existing entries."
 
   :group 'org-gcal
   :type '(choice
@@ -302,41 +302,41 @@ Values: see ‘org-gcal-managed-newly-fetched-mode’."
           (const :tag "Prompt whether to push to Google Calendar, even during syncs" prompt-sync)
           (const :tag "Always push to Google Calendar" always-push)))
 
-(defcustom org-gcal-recurring-events-mode ‘top-level
+(defcustom org-gcal-recurring-events-mode 'top-level
   "How to treat instances of recurring events not already fetched.
 
-- `top-level’: insert all instances at the top level of the appropriate file for
-  the calendar ID in `org-gcal-fetch-file-alist’.
-- `nested’: insert instances of a recurring event under the Org-mode headline
-  containing the parent event.  If a headline for the parent event doesn’t exist,
+- `top-level': insert all instances at the top level of the appropriate file for
+  the calendar ID in `org-gcal-fetch-file-alist'.
+- `nested': insert instances of a recurring event under the Org-mode headline
+  containing the parent event.  If a headline for the parent event doesn't exist,
   it will be created.
-- `:instances’ -- dual-pass sync.  Pass 1 fetches master events
+- `:instances' -- dual-pass sync.  Pass 1 fetches master events
   (singleEvents=false) and creates parent headings with inactive timestamps and
   repeaters.  Pass 2 fetches all instances (singleEvents=true) and inserts them
   as child headings with active timestamps under the parent.  Cancelled instances
   are removed.  Non-recurring events are handled normally with active timestamps."
-  :group ‘org-gcal
-  :type ‘(choice
+  :group 'org-gcal
+  :type '(choice
           (const :tag "Insert at top level" top-level)
           (const :tag "Insert under headline for parent event" nested)
           (const :tag "Master + instances (dual-pass)" :instances)))
 
 (defcustom org-gcal-after-update-entry-functions nil
-  "List of functions to run just before ‘org-gcal--update-entry’ returns.
+  "List of functions to run just before 'org-gcal--update-entry' returns.
 
 This is the function called when an event is created, updated, or deleted. Each
 function in the list is called with the following arguments:
 
 - CALENDAR-ID: the calendar ID of the event, as a string.
 - EVENT: the event data downloaded from the Google Calendar API and parsed using
-  ‘org-gcal--json-read'.
+  'org-gcal--json-read'.
 - UPDATE-MODE: a symbol, one of
   - NEWLY-FETCHED: the event is newly fetched (see
-    ‘org-gcal-managed-newly-fetched-mode').
+    'org-gcal-managed-newly-fetched-mode').
   - UPDATE-EXISTING: a headline with existing calendar and event IDs is being
-    updated (see ‘org-gcal-managed-update-existing-mode').
+    updated (see 'org-gcal-managed-update-existing-mode').
   - CREATE-FROM-ENTRY: a headline without existing calendar and event IDs is
-    being updated (see ‘org-gcal-managed-create-from-entry-mode’)."
+    being updated (see 'org-gcal-managed-create-from-entry-mode')."
   :group 'org-gcal
   :type 'list)
 
@@ -361,7 +361,7 @@ Org-mode property on org-gcal entries that records the ETag."
 (defcustom org-gcal-managed-property "org-gcal-managed"
   " Org-mode property on org-gcal entries that records how an event is managed.
 
-  For values the property can take, see ‘org-gcal-managed-newly-fetched-mode’."
+  For values the property can take, see 'org-gcal-managed-newly-fetched-mode'."
   :group 'org-gcal
   :type 'string)
 
@@ -404,7 +404,7 @@ Returns a URL for recurrent event EVENT-ID on calendar CALENDAR-ID."
 
 (cl-defstruct (org-gcal--event-entry
                (:constructor org-gcal--event-entry-create))
-  ;; Entry ID. Created by ‘org-gcal--format-entry-id’.
+  ;; Entry ID. Created by 'org-gcal--format-entry-id'.
   entry-id
   ;; Optional marker pointing to entry-id.
   marker
@@ -418,19 +418,19 @@ Returns a URL for recurrent event EVENT-ID on calendar CALENDAR-ID."
   "Storage for Calendar API sync tokens, used for performing incremental sync.
 
 This is a a hash table mapping calendar IDs (as given in
-‘org-gcal-fetch-file-alist’) to a list (EXPIRES SYNC-TOKEN).  EXPIRES is an
+'org-gcal-fetch-file-alist') to a list (EXPIRES SYNC-TOKEN).  EXPIRES is an
 Emacs time value that stores the time after which we should perform a full sync
 instead of an incremental sync using the SYNC-TOKEN stored from the Calendar
 API.
 
 Persisted between sessions of Emacs.  To clear sync tokens, call
-‘org-gcal-sync-tokens-clear’.")
+'org-gcal-sync-tokens-clear'.")
 
 (defmacro org-gcal--sync-tokens-get (key &optional remove?)
-  "Get KEY from ‘org-gcal--sync-tokens’, or nil if not found.
+  "Get KEY from 'org-gcal--sync-tokens', or nil if not found.
 
 This is a macro instead of a function so that it can be used as a place
-expression in ‘setf’.  In that case, if REMOVE? is non-nil, the key-value
+expression in 'setf'.  In that case, if REMOVE? is non-nil, the key-value
 pair will be removed instead of set."
   `(alist-get ,key org-gcal--sync-tokens nil ,remove? #'equal))
 
@@ -441,7 +441,7 @@ Export the ones to the calendar if unless
 SKIP-EXPORT.  Set SILENT to non-nil to inhibit notifications."
   (interactive)
   (when org-gcal--sync-lock
-    (user-error "org-gcal sync locked. If a previous sync has failed, call ‘org-gcal--sync-unlock’ to reset the lock and try again."))
+    (user-error "org-gcal sync locked. If a previous sync has failed, call 'org-gcal--sync-unlock' to reset the lock and try again."))
   (org-gcal--sync-lock)
   ;; Don't scan upfront — org-generic-id-find auto-updates on cache miss,
   ;; and we do a full scan after fetching (before sync-buffer phase).
@@ -489,7 +489,7 @@ SKIP-EXPORT.  Set SILENT to non-nil to inhibit notifications."
                                                  up-time down-time)
   "Sync events for CALENDAR-ID-FILE
 
-CALENDAR-ID-FILE is a cons in ‘org-gcal-fetch-file-alist’, for which see."
+CALENDAR-ID-FILE is a cons in 'org-gcal-fetch-file-alist', for which see."
   (if (eq org-gcal-recurring-events-mode :instances)
       ;; Dual-pass: masters first, then instances.
       (deferred:$
@@ -509,7 +509,7 @@ CALENDAR-ID-FILE is a cons in ‘org-gcal-fetch-file-alist’, for which see."
                       parent-events &optional instances-pass)
   "Sync events for CALENDAR-ID-FILE.
 
-CALENDAR-ID-FILE is a cons in ‘org-gcal-fetch-file-alist’, for which see.
+CALENDAR-ID-FILE is a cons in 'org-gcal-fetch-file-alist', for which see.
 INSTANCES-PASS is nil for legacy, :masters for pass 1, :instances for pass 2."
   (let* ((calendar-id (car calendar-id-file))
          (calendar-file (org-gcal--calendar-file calendar-id-file))
@@ -557,7 +557,7 @@ INSTANCES-PASS is nil for legacy, :masters for pass 1, :instances for pass 2."
                       up-time down-time)
   "Sync instances of instances of recurring event PARENT-EVENT-ID.
 
-CALENDAR-ID-FILE is a cons in ‘org-gcal-fetch-file-alist’, for which see."
+CALENDAR-ID-FILE is a cons in 'org-gcal-fetch-file-alist', for which see."
   (let* ((calendar-id (car calendar-id-file))
          (calendar-file (org-gcal--calendar-file calendar-id-file))
          (page-token-cons (list nil)))
@@ -596,7 +596,7 @@ CALENDAR-ID-FILE is a cons in ‘org-gcal-fetch-file-alist’, for which see."
     (calendar-id-file event-id skip-export)
   "Sync a single event given by EVENT-ID
 
-CALENDAR-ID-FILE is a cons in ‘org-gcal-fetch-file-alist’, for which see."
+CALENDAR-ID-FILE is a cons in 'org-gcal-fetch-file-alist', for which see."
   (let* ((calendar-id (car calendar-id-file))
          (calendar-file (org-gcal--calendar-file calendar-id-file)))
 
@@ -630,26 +630,26 @@ When SINGLE-EVENTS is non-nil, pass singleEvents=true to the API."
     :params
     (append
      `(("access_token" . ,token))
-    (when single-events ‘(("singleEvents" . "true")))
+    (when single-events '(("singleEvents" . "true")))
     (when org-gcal-local-timezone `(("timeZone" . ,org-gcal-local-timezone)))
     (seq-let [expires sync-token]
-        ;; Ensure ‘org-gcal--sync-tokens-get’ return value is actually a list
-        ;; before passing to ‘seq-let’.
+        ;; Ensure 'org-gcal--sync-tokens-get' return value is actually a list
+        ;; before passing to 'seq-let'.
         (when-let
             ((x (org-gcal--sync-tokens-get tk))
              ((listp x)))
           x)
       (cond
-       ;; Don’t use the sync token if it’s expired.
+       ;; Don't use the sync token if it's expired.
        ((and expires sync-token
              (time-less-p (current-time) expires))
         `(("syncToken" . ,sync-token)))
        (t
-        (setf (org-gcal--sync-tokens-get tk ‘remove) nil)
+        (setf (org-gcal--sync-tokens-get tk 'remove) nil)
         `(("timeMin" . ,(org-gcal--format-time2iso up-time))
           ("timeMax" . ,(org-gcal--format-time2iso down-time))))))
      (when page-token `(("pageToken" . ,page-token))))
-    :parser ‘org-gcal--json-read)))
+    :parser 'org-gcal--json-read)))
 
 (defun org-gcal--sync-request-instances
     (calendar-id event-id up-time down-time page-token)
@@ -672,9 +672,9 @@ When SINGLE-EVENTS is non-nil, pass singleEvents=true to the API."
 (defun org-gcal--sync-handle-response
     (response calendar-id-file page-token-cons down-time retry-fn
               &optional token-key)
-  "Handle RESPONSE in ‘org-gcal--sync-calendar’ for CALENDAR-ID-FILE.
+  "Handle RESPONSE in 'org-gcal--sync-calendar' for CALENDAR-ID-FILE.
 
-Update PAGE-TOKEN from the response, and return a ‘deferred’ list of event
+Update PAGE-TOKEN from the response, and return a 'deferred' list of event
 objects for further processing.
 TOKEN-KEY overrides the sync token lookup key (default: calendar-id)."
   (let
@@ -708,7 +708,7 @@ TOKEN-KEY overrides the sync token lookup key (default: calendar-id)."
      ((eq 410 status-code)
       (org-gcal--notify "Received HTTP 410"
                         "Calendar API sync token expired - performing full sync.")
-      (setf (org-gcal--sync-tokens-get tk ‘remove) nil)
+      (setf (org-gcal--sync-tokens-get tk 'remove) nil)
       (funcall retry-fn))
      ;; We got some 2xx response, but for some reason no
      ;; message body.
@@ -735,7 +735,7 @@ TOKEN-KEY overrides the sync token lookup key (default: calendar-id)."
                 (list
                  ;; The first element is the expiration time of
                  ;; the sync token. Note that, if the expiration
-                 ;; time already exists, we don’t update it. We
+                 ;; time already exists, we don't update it. We
                  ;; want to expire the token according to the
                  ;; time of the previous full sync.
                  (or
@@ -749,14 +749,14 @@ TOKEN-KEY overrides the sync token lookup key (default: calendar-id)."
                  parent-events &optional calendar-heading instances-pass)
   "Handle a list of EVENTS fetched from the Calendar API.
 
-CALENDAR-ID and CALENDAR-FILE are defined in ‘org-gcal--sync-inner’.
-RECURRING-INSTANCES? is t if we’re currently fetching instances of recurring
+CALENDAR-ID and CALENDAR-FILE are defined in 'org-gcal--sync-inner'.
+RECURRING-INSTANCES? is t if we're currently fetching instances of recurring
 events and nil otherwise.
 CALENDAR-HEADING, when non-nil, is a string naming a heading under which
 new events should be inserted as children.
 INSTANCES-PASS, when non-nil, is one of:
-  :masters  — Pass 1 of `instances’ mode (master events, inactive timestamps)
-  :instances — Pass 2 of `instances’ mode (individual instances as children)
+  :masters  — Pass 1 of `instances' mode (master events, inactive timestamps)
+  :instances — Pass 2 of `instances' mode (individual instances as children)
 
 Any parent recurring events are appended in-place to the list PARENT-EVENTS."
   (with-current-buffer (find-file-noselect calendar-file)
@@ -771,7 +771,7 @@ Any parent recurring events are appended in-place to the list PARENT-EVENTS."
                        calendar-id (plist-get event :id)))
             (recurring-event-id (plist-get event :recurringEventId))
             (recurrence (plist-get event :recurrence))
-            (marker (org-gcal--id-find entry-id ‘markerp))
+            (marker (org-gcal--id-find entry-id 'markerp))
             ;; In instances mode, master recurring events get inactive
             ;; timestamps; non-recurring events stay active.
             (inactive-p (and (eq instances-pass :masters) recurrence)))
@@ -787,9 +787,9 @@ Any parent recurring events are appended in-place to the list PARENT-EVENTS."
               (not marker))
          (let* ((parent-entry-id
                  (org-gcal--format-entry-id calendar-id recurring-event-id))
-                (parent-marker (org-gcal--id-find parent-entry-id ‘markerp)))
+                (parent-marker (org-gcal--id-find parent-entry-id 'markerp)))
            (when parent-marker
-             ;; Don’t insert cancelled instances.
+             ;; Don't insert cancelled instances.
              (unless (org-gcal--event-cancelled-p event)
                (atomic-change-group
                  (org-with-point-at parent-marker
@@ -797,7 +797,7 @@ Any parent recurring events are appended in-place to the list PARENT-EVENTS."
                      (org-end-of-subtree t t)
                      (unless (bolp) (insert "\n"))
                      (insert (make-string (1+ level) ?*) " ")
-                     (org-gcal--update-entry calendar-id event ‘newly-fetched)
+                     (org-gcal--update-entry calendar-id event 'newly-fetched)
                      (org-entry-put (point) org-gcal-managed-property
                                     org-gcal-managed-newly-fetched-mode)))))
              (when parent-marker (set-marker parent-marker nil)))
@@ -811,7 +811,7 @@ Any parent recurring events are appended in-place to the list PARENT-EVENTS."
          nil)
         ;; Cancelled events may lack start/end fields.  If we have an
         ;; existing heading, just mark it cancelled without a full update.
-        ;; In instances pass 2, also remove the child heading’s subtree.
+        ;; In instances pass 2, also remove the child heading's subtree.
         ((and marker (org-gcal--event-cancelled-p event))
          (org-with-point-at marker
            (if (eq instances-pass :instances)
@@ -827,12 +827,12 @@ Any parent recurring events are appended in-place to the list PARENT-EVENTS."
           :marker marker
           :event event
           :inactive inactive-p))
-        ;; If event doesn’t already exist and is outside of the
-        ;; range [‘org-gcal-up-days’, ‘org-gcal-down-days’], ignore
+        ;; If event doesn't already exist and is outside of the
+        ;; range ['org-gcal-up-days', 'org-gcal-down-days'], ignore
         ;; it. This is necessary because when called with
         ;; "syncToken", the Calendar API will return all events
         ;; changed on the calendar, without respecting
-        ;; ‘org-gcal-up-days’ or ‘org-gcal-down-days’, which means
+        ;; 'org-gcal-up-days' or 'org-gcal-down-days', which means
         ;; repeated events far in the future will be downloaded.
         ;; Skip this check for master recurring events — their start
         ;; date is the first occurrence, not the current one.
@@ -851,7 +851,7 @@ Any parent recurring events are appended in-place to the list PARENT-EVENTS."
                       (error nil))))
                 t))
          nil)
-        ;; Don’t insert instances of cancelled events that haven’t already been
+        ;; Don't insert instances of cancelled events that haven't already been
         ;; fetched.
         ((string= "cancelled" (plist-get event :status))
          nil)
@@ -864,7 +864,7 @@ Any parent recurring events are appended in-place to the list PARENT-EVENTS."
                (let ((pos (org-find-exact-headline-in-buffer
                            calendar-heading)))
                  (unless pos
-                   ;; Create the heading if it doesn’t exist yet.
+                   ;; Create the heading if it doesn't exist yet.
                    (goto-char (point-max))
                    (unless (bolp) (insert "\n"))
                    (insert "* " calendar-heading "\n")
@@ -875,13 +875,13 @@ Any parent recurring events are appended in-place to the list PARENT-EVENTS."
                    (org-end-of-subtree t t)
                    (unless (bolp) (insert "\n"))
                    (insert (make-string (1+ level) ?*) " ")
-                   (org-gcal--update-entry calendar-id event ‘newly-fetched
+                   (org-gcal--update-entry calendar-id event 'newly-fetched
                                            inactive-p)
                    (org-entry-put (point) org-gcal-managed-property
                                   org-gcal-managed-newly-fetched-mode)))
              (org-with-point-at (point-max)
                (insert "\n* ")
-               (org-gcal--update-entry calendar-id event ‘newly-fetched
+               (org-gcal--update-entry calendar-id event 'newly-fetched
                                        inactive-p)
                (org-entry-put (point) org-gcal-managed-property
                               org-gcal-managed-newly-fetched-mode))))
@@ -889,11 +889,11 @@ Any parent recurring events are appended in-place to the list PARENT-EVENTS."
      collect it)))
 
 (defun org-gcal--sync-update-entries (calendar-id entries skip-export)
-  "Update headlines given by ‘org-gcal--event-entry’ ENTRIES.
+  "Update headlines given by 'org-gcal--event-entry' ENTRIES.
 
 Find already retrieved entries and update them. This will update events that
 have been moved from the default fetch file.  CALENDAR-ID is defined in
-‘org-gcal--sync-inner'."
+'org-gcal--sync-inner'."
   (deferred:$
    (deferred:loop entries
                   (lambda (entry)
@@ -935,7 +935,7 @@ have been moved from the default fetch file.  CALENDAR-ID is defined in
   (setq org-gcal--sync-lock nil))
 
 (defun org-gcal--sync-get-update-existing ()
-  "Obtain value of ‘org-gcal-managed-post-at-point-update-existing’ for syncs."
+  "Obtain value of 'org-gcal-managed-post-at-point-update-existing' for syncs."
   (if (equal org-gcal-managed-post-at-point-update-existing 'prompt)
       'never-push
     org-gcal-managed-post-at-point-update-existing))
@@ -955,12 +955,12 @@ Updates events on the server unless SKIP-EXPORT is set. In this case, events
 modified on the server will overwrite entries in the buffer.
 Set SILENT to non-nil to inhibit notifications.
 Set FILTER-DATE to only update events scheduled for later than
-‘org-gcal-up-days' and earlier than ‘org-gcal-down-days'.
-Set FILTER-MAANGED to only update events with ‘org-gcal-managed-property’ set
+'org-gcal-up-days' and earlier than 'org-gcal-down-days'.
+Set FILTER-MAANGED to only update events with 'org-gcal-managed-property' set
 to “org”."
   (interactive)
   (when org-gcal--sync-lock
-    (user-error "org-gcal sync locked. If a previous sync has failed, call ‘org-gcal--sync-unlock’ to reset the lock and try again."))
+    (user-error "org-gcal sync locked. If a previous sync has failed, call 'org-gcal--sync-unlock' to reset the lock and try again."))
   (org-gcal--sync-lock)
   (let*
       ((name (or (buffer-file-name) (buffer-name))))
@@ -982,7 +982,7 @@ to “org”."
 (defmacro org-gcal--with-point-at-no-widen (pom &rest body)
   "Move to buffer and point of point-or-marker POM for the duration of BODY.
 
-Based on ‘org-with-point-at’ but doesn’t widen the buffer.
+Based on 'org-with-point-at' but doesn't widen the buffer.
 Signals an error if POM is a marker whose buffer has been killed."
   (declare (debug (form body)) (indent 1))
   (org-with-gensyms (mpom)
@@ -997,7 +997,7 @@ Signals an error if POM is a marker whose buffer has been killed."
 
 (defun org-gcal--sync-buffer-inner
     (skip-export _silent filter-date filter-managed marker)
-  "Inner loop of ‘org-gcal-sync-buffer’."
+  "Inner loop of 'org-gcal-sync-buffer'."
   (while
       (not
        (catch 'block
@@ -1010,7 +1010,7 @@ Signals an error if POM is a marker whose buffer has been killed."
                           ;; - nil if there are no more headlines.
                           (lambda (_)
                             (org-gcal--with-point-at-no-widen marker
-                              ;; By default set next position of marker to nil. We’ll set it below if
+                              ;; By default set next position of marker to nil. We'll set it below if
                               ;; there remains more to edit.
                               (setq marker nil)
                               (let* ((drawer-point
@@ -1034,7 +1034,7 @@ Signals an error if POM is a marker whose buffer has been killed."
                                               (when (funcall drawer-point)
                                                 (setq marker agenda-marker)
                                                 (point-marker)))))
-                                        ;; If org-marker isn’t found on this line, go to the next one.
+                                        ;; If org-marker isn't found on this line, go to the next one.
                                         (forward-line 1))
                                        (t
                                         (user-error "Unsupported major mode %s in current buffer"
@@ -1055,7 +1055,7 @@ Signals an error if POM is a marker whose buffer has been killed."
                                             ;; Skip posting the headline under these
                                             ;; conditions
                                             (or
-                                             ;; Don’t sync events if ‘filter-date’ is set
+                                             ;; Don't sync events if 'filter-date' is set
                                              ;; and event is too far in the past or
                                              ;; future.
                                              (and filter-date
@@ -1063,9 +1063,9 @@ Signals an error if POM is a marker whose buffer has been killed."
                                                    (not start) (not end)
                                                    (time-less-p start (org-gcal--up-time))
                                                    (time-less-p (org-gcal--down-time) end)))
-                                             ;; Don’t sync if ‘filter-managed’ is set and
+                                             ;; Don't sync if 'filter-managed' is set and
                                              ;; headline is not managed by Org (see
-                                             ;; ‘org-gcal-managed-property')
+                                             ;; 'org-gcal-managed-property')
                                              (and filter-managed
                                                   (not
                                                    (string=
@@ -1108,15 +1108,15 @@ Signals an error if POM is a marker whose buffer has been killed."
 (defun org-gcal-fetch-buffer (&optional silent filter-date)
   "Fetch changes to events in the currently-visible portion of the buffer
 
-Unlike ‘org-gcal-sync-buffer’, this will not push any changes to Google
-Calendar. For SILENT and FILTER-DATE see ‘org-gcal-sync-buffer’."
+Unlike 'org-gcal-sync-buffer', this will not push any changes to Google
+Calendar. For SILENT and FILTER-DATE see 'org-gcal-sync-buffer'."
   (interactive)
   (org-gcal-sync-buffer t silent filter-date))
 
 (defvar org-gcal-debug nil)
 ;;;###autoload
 (defun org-gcal-toggle-debug ()
-  "Toggle debugging flags for ‘org-gcal'."
+  "Toggle debugging flags for 'org-gcal'."
   (interactive)
   (cond
    (org-gcal-debug
@@ -1141,7 +1141,7 @@ Calendar. For SILENT and FILTER-DATE see ‘org-gcal-sync-buffer’."
        (request-log-buffer-name . ,request-log-buffer-name))
      debug-on-error '(error)
      ;; These are errors that are thrown by various pieces of code that
-     ;; don’t mean anything.
+     ;; don't mean anything.
      debug-ignored-errors (append debug-ignored-errors
                                   '(scan-error file-already-exists))
      deferred:debug t
@@ -1173,8 +1173,8 @@ filter returns NIL, discard the item."
 
 (defun org-gcal--all-property-local-values (pom property literal-nil)
   "Return all values for PROPERTY in entry at point or marker POM.
-Works like ‘org--property-local-values’, except that if multiple values of a
-property whose key doesn’t contain a ‘+’ sign are present, this function will
+Works like 'org--property-local-values', except that if multiple values of a
+property whose key doesn't contain a '+' sign are present, this function will
 return all of them. In particular, we wish to retrieve all local values of the
 \"ID\" property. LITERAL-NIL also works the same way.
 
@@ -1204,17 +1204,17 @@ With optional argument MARKERP, return the position as a new marker."
   (or
    (org-generic-id-find org-gcal-entry-id-property id markerp
                         'cached)
-   ;; Fallback for legacy "ID" property. Don’t use ‘org-id-find’ directly
-   ;; because it always run ‘org-id-update-id-locations’ if the ID isn’t found,
+   ;; Fallback for legacy "ID" property. Don't use 'org-id-find' directly
+   ;; because it always run 'org-id-update-id-locations' if the ID isn't found,
    ;; which slows us down considerably, and tries to fall back to the current
-   ;; buffer, which we don’t want either.
+   ;; buffer, which we don't want either.
    (when-let ((file (org-gcal--find-id-file id)))
      (org-id-find-id-in-file id file markerp))))
 
 (defun org-gcal--find-id-file (id)
   "Query the id database for the file in which this ID is located.
 
-Like ‘org-id-find-id-file’, except that it doesn’t fall back to the current
+Like 'org-id-find-id-file', except that it doesn't fall back to the current
 buffer if ID is not found in the id database, but instead returns nil.
 
 Only needed for legacy entries that use \"ID\" to store entry IDs."
@@ -1227,7 +1227,7 @@ Only needed for legacy entries that use \"ID\" to store entry IDs."
 (defun org-gcal--get-id (pom)
   "Retrieve an entry ID at point-or-marker POM.
 
-  Use ‘org-gcal-entry-id-property', or \":ID:\" if not present (for backward
+  Use 'org-gcal-entry-id-property', or \":ID:\" if not present (for backward
 compatibility)."
   (org-gcal--event-id-from-entry-id
    (or (org-entry-get pom org-gcal-entry-id-property)
@@ -1238,10 +1238,10 @@ compatibility)."
   "Store a canonical entry ID at point-or-marker POM.
 
 Entry ID is generated from CALENDAR-ID and EVENT-ID and stored in the
-‘org-gcal-entry-id-property'.
+'org-gcal-entry-id-property'.
 
 This will also update the stored ID locations using
-‘org-generic-id-add-location'."
+'org-generic-id-add-location'."
   (org-with-point-at pom
     (org-gcal--back-to-heading)
     (let ((entry-id (org-gcal--format-entry-id calendar-id event-id)))
@@ -1252,7 +1252,7 @@ This will also update the stored ID locations using
                                      truename)))))
 
 (defun org-gcal--event-id-from-entry-id (entry-id)
-  "Parse an ENTRY-ID created by ‘org-gcal--format-entry-id’ and return EVENT-ID."
+  "Parse an ENTRY-ID created by 'org-gcal--format-entry-id' and return EVENT-ID."
   (when
       (and entry-id
            (string-match
@@ -1276,7 +1276,7 @@ This will also update the stored ID locations using
 
 (defun org-gcal--back-to-heading ()
   "\
-  Call ‘org-back-to-heading’ with the invisible-ok argument set to true.
+  Call 'org-back-to-heading' with the invisible-ok argument set to true.
   We always intend to go back to the invisible heading here."
   (org-back-to-heading 'invisible-ok))
 
@@ -1313,7 +1313,7 @@ This will also update the stored ID locations using
          (save-excursion (outline-next-heading) (point)))
         (setq desc (match-string-no-properties 1))
         (setq desc
-              (if (string-match-p "\\‘\n*\\’" desc)
+              (if (string-match-p "\\'\n*\\'" desc)
                   nil
                 (replace-regexp-in-string
                  "^✱" "*"
@@ -1352,7 +1352,7 @@ This will also update the stored ID locations using
 (defun org-gcal--source-from-link-string (link)
   "Parse LINK, a link in Org format, to a Google Calendar API source object.
 
-Returns an alist with ‘:url’ for the link URL and ‘:title’ for the link title,
+Returns an alist with ':url' for the link URL and ':title' for the link title,
 or nil if no valid link is found."
   (with-temp-buffer
     (let ((org-inhibit-startup nil))
@@ -1375,13 +1375,13 @@ or nil if no valid link is found."
   "Post entry at point to current calendar.
 
 This overwrites the event on the server with the data from the entry, except if
-the ‘org-gcal-etag-property’ is present and is out of sync with the server, in
+the 'org-gcal-etag-property' is present and is out of sync with the server, in
 which case the entry is overwritten with data from the server instead.
 
-If SKIP-IMPORT is not nil, don’t overwrite the entry with data from the server.
-If SKIP-EXPORT is not nil, don’t overwrite the event on the server.
+If SKIP-IMPORT is not nil, don't overwrite the entry with data from the server.
+If SKIP-EXPORT is not nil, don't overwrite the event on the server.
 For valid values of EXISTING-MODE see
-‘org-gcal-managed-post-at-point-update-existing'."
+'org-gcal-managed-post-at-point-update-existing'."
   (interactive)
   (save-excursion
     ;; Post entry at point in org-agenda buffer.
@@ -1412,7 +1412,7 @@ For valid values of EXISTING-MODE see
            (managed (org-entry-get (point) org-gcal-managed-property))
            (calendar-id
             (org-entry-get (point) org-gcal-calendar-id-property)))
-      ;; Set ‘org-gcal-managed-property’ if not present.
+      ;; Set 'org-gcal-managed-property' if not present.
       (unless (and managed (member managed '("org" "gcal")))
         (let ((x
                (if (and calendar-id event-id)
@@ -1424,7 +1424,7 @@ For valid values of EXISTING-MODE see
       (unless calendar-id
         (setq calendar-id
               ;; Completes read with prompts like "CALENDAR-FILE (CALENDAR-ID)",
-              ;; and then uses ‘replace-regexp-in-string’ to extract just
+              ;; and then uses 'replace-regexp-in-string' to extract just
               ;; CALENDAR-ID.
               (replace-regexp-in-string
                ".*(\\(.*?\\))$" "\\1"
@@ -1442,7 +1442,7 @@ For valid values of EXISTING-MODE see
           ;; PROMPT and PROMPT-SYNC are handled identically here. When syncing
           ;; PROMPT is mapped to NEVER-PUSH in the calling function, while
           ;; PROMPT-SYNC is left unchanged.
-          ;; Only when manually running ‘org-gcal-post-at-point’ should PROMPT
+          ;; Only when manually running 'org-gcal-post-at-point' should PROMPT
           ;; be seen here.
           ((or 'prompt 'prompt-sync)
            (unless (y-or-n-p (format "Push event to Google Calendar?\n\n%s\n\n"
@@ -1450,7 +1450,7 @@ For valid values of EXISTING-MODE see
              (setq skip-export t)))
           ('always-push nil)
           (val
-           (user-error "Bad value %S of EXISTING-MODE passed to ‘org-gcal-post-at-point’. For valid values see ‘org-gcal-managed-post-at-point-update-existing’."
+           (user-error "Bad value %S of EXISTING-MODE passed to 'org-gcal-post-at-point'. For valid values see 'org-gcal-managed-post-at-point-update-existing'."
                        val))))
       ;; Read currently-present start and end times and description. Fill in a
       ;; reasonable start and end time if either is missing.
@@ -1465,7 +1465,7 @@ For valid values of EXISTING-MODE see
                   (org-duration-from-minutes
                    (max
                     org-gcal-event-default-duration
-                    ;; Round up to the nearest multiple of ‘resolution’ minutes.
+                    ;; Round up to the nearest multiple of 'resolution' minutes.
                     (* resolution
                        (ceiling
                         (/ (- (org-duration-to-minutes
@@ -1522,7 +1522,7 @@ delete calendar info from events on calendars you no longer have access to."
                (unless (marker-buffer marker)
                  (error "org-gcal: marker’s buffer has been killed"))
                ;; Delete :org-gcal: drawer after deleting event. This will preserve
-               ;; the ID for links, but will ensure functions in this module don’t
+               ;; the ID for links, but will ensure functions in this module don't
                ;; identify the entry as a Calendar event.
                (org-with-point-at marker
                  (when (re-search-forward
@@ -1568,8 +1568,8 @@ calendars share a single OAuth token via `org-gcal--account'."
 (defun org-gcal-sync-tokens-clear ()
   "Clear all Calendar API sync tokens.
 
-  Use this to force retrieving all events in ‘org-gcal-sync’ or
-  ‘org-gcal-fetch’."
+  Use this to force retrieving all events in 'org-gcal-sync' or
+  'org-gcal-fetch'."
   (interactive)
   (setq org-gcal--sync-tokens nil)
   (persist-save 'org-gcal--sync-tokens))
@@ -1625,7 +1625,7 @@ calendars share a single OAuth token via `org-gcal--account'."
       (pp content (current-buffer)))))
 
 (defun org-gcal--read-file-contents (file)
-  "Call ‘read’ on the contents of FILE, returning the resulting object."
+  "Call 'read' on the contents of FILE, returning the resulting object."
   (with-temp-buffer
     (insert-file-contents file)
     (goto-char (point-min))
@@ -1714,7 +1714,7 @@ plain text suitable for insertion into Org files."
 
 (defun org-gcal--parse-calendar-time (time)
   "Parse TIME, the start or end time object from Calendar API Events resource.
-Return an Emacs time object from ‘encode-time'."
+Return an Emacs time object from 'encode-time'."
   (org-gcal--parse-calendar-time-string
    (or (plist-get time :dateTime)
        (plist-get time :date))))
@@ -1725,8 +1725,8 @@ Return an Emacs time object from ‘encode-time'."
           (parse-iso8601-time-string time-string)
         (apply #'encode-time
                ;; Full days have time strings with unknown hour, minute, and
-               ;; second, which ‘parse-time-string’ will set to
-               ;; nil. ‘encode-time’ can’t tolerate that, so instead set the
+               ;; second, which 'parse-time-string' will set to
+               ;; nil. 'encode-time' can't tolerate that, so instead set the
                ;; time to 00:00:00.
                `(0 0 0 .
                  ,(nthcdr 3 (parse-time-string time-string)))))
@@ -1735,11 +1735,11 @@ Return an Emacs time object from ‘encode-time'."
     (error (encode-time 0 0 0 1 1 1970))))
 
 (defun org-gcal--down-time ()
-  "Convert ‘org-gcal-down-days’ to Emacs time value."
+  "Convert 'org-gcal-down-days' to Emacs time value."
   (time-add (current-time) (days-to-time org-gcal-down-days)))
 
 (defun org-gcal--up-time ()
-  "Convert ‘org-gcal-up-days’ to Emacs time value."
+  "Convert 'org-gcal-up-days' to Emacs time value."
   (time-subtract (current-time) (days-to-time org-gcal-up-days)))
 
 (defun org-gcal--time-zone (seconds)
@@ -1976,17 +1976,17 @@ When INACTIVE is non-nil, use square brackets instead of angle brackets."
 (defun org-gcal--update-entry (calendar-id event &optional update-mode inactive)
   "Update the entry at the current heading with information from EVENT.
 
-EVENT is parsed from the Calendar API JSON response using ‘org-gcal--json-read’.
+EVENT is parsed from the Calendar API JSON response using 'org-gcal--json-read'.
 CALENDAR-ID must be passed as well. Point must be located on an Org-mode heading
 line or an error will be thrown. Point is not preserved.
 
 If UPDATE-MODE is passed, then the functions in
-‘org-gcal-after-update-entry-functions’ are called in order with the same
+'org-gcal-after-update-entry-functions' are called in order with the same
 arguments as passed to this function and the point moved to the beginning of the
 heading.
 
 When INACTIVE is non-nil, use inactive timestamps (square brackets) and skip
-SCHEDULED.  Used for master recurring events in `instances’ mode."
+SCHEDULED.  Used for master recurring events in `instances' mode."
   (unless (org-at-heading-p)
     (user-error "Must be on Org-mode heading."))
   (let* ((smry  (plist-get event :summary))
@@ -2021,7 +2021,7 @@ SCHEDULED.  Used for master recurring events in `instances’ mode."
     (when loc (replace-regexp-in-string "\n" ", " loc))
     (org-edit-headline
      (cond
-      ;; Don’t update headline if the new summary is the same as the CANCELLED
+      ;; Don't update headline if the new summary is the same as the CANCELLED
       ;; todo keyword.
       ((equal smry org-gcal-cancelled-todo-keyword) (org-gcal--headline))
       (smry smry)
@@ -2111,7 +2111,7 @@ SCHEDULED.  Used for master recurring events in `instances’ mode."
                          (org-gcal--iso-previous-day end))
                        nil nil inactive))))))
       (if (and (not inactive) (org-element-property :scheduled elem))
-          ;; Ensure CLOSED timestamp isn’t wiped out by ‘org-gcal-sync’ (see
+          ;; Ensure CLOSED timestamp isn't wiped out by 'org-gcal-sync' (see
           ;; https://github.com/kidd/org-gcal.el/issues/218).
           (let ((org-closed-keep-when-no-todo t))
             (org-schedule nil timestamp))
@@ -2154,7 +2154,7 @@ SCHEDULED.  Used for master recurring events in `instances’ mode."
 (defun org-gcal--maybe-remove-entry ()
   "Maybe remove the entry at the current heading
 
-Depends on the value of ‘org-gcal-remove-api-cancelled-events’."
+Depends on the value of 'org-gcal-remove-api-cancelled-events'."
   (when-let (((and org-gcal-remove-api-cancelled-events))
              (smry (org-gcal--headline))
              ((or (eq org-gcal-remove-api-cancelled-events t)
@@ -2200,7 +2200,7 @@ Depends on the value of ‘org-gcal-remove-api-cancelled-events’."
 Retrieves a Google Calendar event given a CALENDAR-ID and EVENT-ID. If the
 access token A-TOKEN is not specified, it is loaded from the token file.
 
-Returns a ‘deferred’ function that on success returns a ‘request-response‘
+Returns a 'deferred' function that on success returns a 'request-response'
 object."
   (let ((a-token (org-gcal--get-access-token calendar-id)))
     (deferred:$
@@ -2261,7 +2261,7 @@ If ETAG is provided, it is used to retrieve the event data from the server and
 overwrite the event at MARKER if the event has changed on the server. MARKER is
 destroyed by this function.
 
-Returns a ‘deferred’ object that can be used to wait for completion."
+Returns a 'deferred' object that can be used to wait for completion."
   (let ((stime (org-gcal--param-date start))
         (etime (org-gcal--param-date end))
         (stime-alt (org-gcal--param-date-alt start))
@@ -2400,7 +2400,7 @@ this function.
 If ETAG is provided, it is used to retrieve the event data from the server and
 overwrite the event at MARKER if the event has changed on the server.
 
-Returns a ‘deferred’ object that can be used to wait for completion."
+Returns a 'deferred' object that can be used to wait for completion."
   (let ((a-token (or a-token (org-gcal--get-access-token calendar-id))))
     (deferred:try
      (deferred:$
@@ -2506,9 +2506,9 @@ Returns a ‘deferred’ object that can be used to wait for completion."
 (defun org-gcal--refile-post ()
   "Create gcal event for headline when refiled into a gcal Org file."
   (unless (or
-           ;; Refile from capture is handled by ‘org-gcal--capture-post’.
+           ;; Refile from capture is handled by 'org-gcal--capture-post'.
            (bound-and-true-p org-capture-is-refiling)
-           ;; Don’t POST unnecessarily if the headline being refiled is already
+           ;; Don't POST unnecessarily if the headline being refiled is already
            ;; a gcal event.
            (and (org-entry-get (point) org-gcal-calendar-id-property)
                 (org-entry-get (point) org-gcal-entry-id-property)))
@@ -2532,7 +2532,7 @@ Returns a ‘deferred’ object that can be used to wait for completion."
   (add-hook 'org-after-refile-insert-hook 'org-gcal--refile-post))
 
 (defun org-gcal--sync-tokens-valid ()
-  "Is ‘org-gcal--sync-tokens’ in a valid format?"
+  "Is 'org-gcal--sync-tokens' in a valid format?"
   (and (listp org-gcal--sync-tokens)
        (json-alist-p org-gcal--sync-tokens)))
 
@@ -2553,7 +2553,7 @@ beginning position."
 (defun org-gcal--notify (title message &optional silent)
   "Send alert with TITLE and MESSAGE.
 
-When SILENT is non-nil, silence messages even when ‘org-gcal-notify-p’ is
+When SILENT is non-nil, silence messages even when 'org-gcal-notify-p' is
 non-nil."
   (when (and org-gcal-notify-p (not silent))
     (if org-gcal-logo-file
@@ -2586,9 +2586,9 @@ non-nil."
 
 (if (and org-gcal-client-id org-gcal-client-secret)
     (org-gcal-reload-client-id-secret)
-  ;; Don’t print warning during tests.
+  ;; Don't print warning during tests.
   (unless noninteractive
-    (warn "org-gcal: must set ‘org-gcal-client-id’ and ‘org-gcal-client-secret’ for this package to work. Please run ‘org-gcal-reload-client-id-secret’ after setting these variables.")))
+    (warn "org-gcal: must set 'org-gcal-client-id' and 'org-gcal-client-secret' for this package to work. Please run 'org-gcal-reload-client-id-secret' after setting these variables.")))
 
 (provide 'org-gcal)
 
