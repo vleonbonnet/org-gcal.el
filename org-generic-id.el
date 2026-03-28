@@ -190,23 +190,37 @@ files currently mentioned in `org-generic-id-locations'.
 When FILES is given, scan also these files."
   (interactive "sID Property: ")
   (let* ((files
-          (delete-dups
-           (mapcar #'abbreviate-file-name
-                   (cl-remove-if-not
-                    ;; Default `org-generic-id-extra-files' value contains
-                    ;; `agenda-archives' symbol.
-                    #'stringp
-                    (append
-                     ;; Agenda files and all associated archives.
-                     (org-agenda-files t org-generic-id-search-archives)
-                     ;; Explicit extra files.
-                     (if (symbolp org-generic-id-extra-files)
-                         (symbol-value org-generic-id-extra-files)
-                       org-generic-id-extra-files)
-                     ;; All files known to have IDs.
-                     (org-generic-id-files)
-                     ;; Additional files from function call.
-                     files)))))
+          (let ((raw (delete-dups
+                      (mapcar #'abbreviate-file-name
+                              (cl-remove-if-not
+                               ;; Default `org-generic-id-extra-files' value
+                               ;; contains `agenda-archives' symbol.
+                               #'stringp
+                               (append
+                                ;; Agenda files and all associated archives.
+                                (org-agenda-files t org-generic-id-search-archives)
+                                ;; Explicit extra files.
+                                (if (symbolp org-generic-id-extra-files)
+                                    (symbol-value org-generic-id-extra-files)
+                                  org-generic-id-extra-files)
+                                ;; All files known to have IDs.
+                                (org-generic-id-files)
+                                ;; Additional files from function call.
+                                files))))))
+            ;; Deduplicate files that resolve to the same physical file
+            ;; (e.g. network drive aliases like Z: vs ~/interceptor).
+            (let ((seen (make-hash-table :test #'equal))
+                  result)
+              (dolist (f raw (nreverse result))
+                (let ((key (ignore-errors
+                             (file-attribute-file-identifier
+                              (file-attributes f)))))
+                  (if key
+                      (unless (gethash key seen)
+                        (puthash key t seen)
+                        (push f result))
+                    ;; Can't determine identity; include the file.
+                    (push f result)))))))
          (nfiles (length files))
          (id-regexp
           (rx-to-string `(seq bol (0+ (any "\t "))
@@ -238,7 +252,7 @@ When FILES is given, scan also these files."
                        (org-generic-id--get-file-to-buf
                         org-generic-id--files file)))
                   (save-excursion
-                    (if buf
+                    (if (and buf (buffer-live-p buf))
                         (set-buffer buf)
                       (insert-file-contents file nil nil nil 'replace))
                     (save-restriction
