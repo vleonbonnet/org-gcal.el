@@ -635,7 +635,7 @@ When SINGLE-EVENTS is non-nil, pass singleEvents=true to the API."
     (seq-let [expires sync-token]
         ;; Ensure 'org-gcal--sync-tokens-get' return value is actually a list
         ;; before passing to 'seq-let'.
-        (when-let
+        (when-let*
             ((x (org-gcal--sync-tokens-get tk))
              ((listp x)))
           x)
@@ -1027,7 +1027,7 @@ Signals an error if POM is a marker whose buffer has been killed."
                                           marker))
                                        ((eq major-mode 'org-agenda-mode)
                                         (while (and (not marker) (not (eobp)))
-                                          (when-let ((agenda-marker (point-marker))
+                                          (when-let* ((agenda-marker (point-marker))
                                                      (org-marker (org-get-at-bol 'org-hd-marker)))
                                             (org-with-point-at org-marker
                                               (org-narrow-to-element)
@@ -1208,7 +1208,7 @@ With optional argument MARKERP, return the position as a new marker."
    ;; because it always run 'org-id-update-id-locations' if the ID isn't found,
    ;; which slows us down considerably, and tries to fall back to the current
    ;; buffer, which we don't want either.
-   (when-let ((file (org-gcal--find-id-file id)))
+   (when-let* ((file (org-gcal--find-id-file id)))
      (org-id-find-id-in-file id file markerp))))
 
 (defun org-gcal--find-id-file (id)
@@ -1359,7 +1359,7 @@ or nil if no valid link is found."
       (insert link)
       (org-mode)
       (goto-char (point-min))
-      (when-let ((link-element (org-element-link-parser)))
+      (when-let* ((link-element (org-element-link-parser)))
         (let ((link-title-begin (org-element-property :contents-begin link-element))
               (link-title-end (org-element-property :contents-end link-element)))
           (append
@@ -1398,7 +1398,7 @@ For valid values of EXISTING-MODE see
            (smry (org-gcal--headline))
            (loc (org-entry-get (point) "LOCATION"))
            (source
-            (when-let ((link-string
+            (when-let* ((link-string
                         (or (org-entry-get (point) "link")
                             (nth 0
                                  (org-entry-get-multivalued-property
@@ -2115,6 +2115,12 @@ SCHEDULED.  Used for master recurring events in `instances' mode."
           ;; https://github.com/kidd/org-gcal.el/issues/218).
           (let ((org-closed-keep-when-no-todo t))
             (org-schedule nil timestamp))
+        ;; When switching to inactive, remove any existing SCHEDULED.
+        (when (and inactive (org-element-property :scheduled elem))
+          (save-excursion
+            (org-back-to-heading t)
+            (let ((org-closed-keep-when-no-todo t))
+              (org-schedule '(4)))))
         (insert timestamp)
         (newline)
         (when desc (newline))))
@@ -2155,7 +2161,7 @@ SCHEDULED.  Used for master recurring events in `instances' mode."
   "Maybe remove the entry at the current heading
 
 Depends on the value of 'org-gcal-remove-api-cancelled-events'."
-  (when-let (((and org-gcal-remove-api-cancelled-events))
+  (when-let* (((and org-gcal-remove-api-cancelled-events))
              (smry (org-gcal--headline))
              ((or (eq org-gcal-remove-api-cancelled-events t)
                   (y-or-n-p (format "Delete Org headline for cancelled event\n%s? "
