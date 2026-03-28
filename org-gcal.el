@@ -477,6 +477,13 @@ SKIP-EXPORT.  Set SILENT to non-nil to inhibit notifications."
       ;; After syncing new events to Org, sync existing events in Org.
       (deferred:nextc it
                       (lambda (_)
+                        ;; Save all calendar buffers before the ID scan so
+                        ;; on-disk state matches in-memory state.
+                        (dolist (cal org-gcal-fetch-file-alist)
+                          (let ((file (expand-file-name (org-gcal--calendar-file cal))))
+                            (when-let* ((buf (find-buffer-visiting file)))
+                              (with-current-buffer buf
+                                (when (buffer-modified-p) (save-buffer))))))
                         (org-generic-id-update-id-locations org-gcal-entry-id-property)
                         (when t
                           (mapc
