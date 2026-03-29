@@ -838,7 +838,13 @@ Any parent recurring events are appended in-place to the list PARENT-EVENTS."
                    (let ((level (org-current-level)))
                      (org-end-of-subtree t t)
                      (unless (bolp) (insert "\n"))
-                     (insert (make-string (1+ level) ?*) " ")
+                     ;; Insert a stub heading with empty properties drawer
+                     ;; BEFORE calling org-gcal--update-entry to avoid
+                     ;; org--align-node-property corrupting the parent.
+                     (insert (make-string (1+ level) ?*) " \n"
+                             ":PROPERTIES:\n:END:\n")
+                     (forward-line -2)
+                     (org-back-to-heading t)
                      (org-gcal--update-entry calendar-id event 'newly-fetched)
                      (org-entry-put (point) org-gcal-managed-property
                                     org-gcal-managed-newly-fetched-mode)))))
@@ -909,7 +915,13 @@ Any parent recurring events are appended in-place to the list PARENT-EVENTS."
                  (let ((level (org-current-level)))
                    (org-end-of-subtree t t)
                    (unless (bolp) (insert "\n"))
-                   (insert (make-string (1+ level) ?*) " ")
+                   ;; Insert stub heading with empty properties drawer to
+                   ;; prevent org--align-node-property from corrupting
+                   ;; adjacent entries.
+                   (insert (make-string (1+ level) ?*) " \n"
+                           ":PROPERTIES:\n:END:\n")
+                   (forward-line -2)
+                   (org-back-to-heading t)
                    (org-gcal--update-entry calendar-id event 'newly-fetched
                                            inactive-p)
                    (org-entry-put (point) org-gcal-managed-property
