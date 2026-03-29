@@ -209,17 +209,13 @@ When FILES is given, scan also these files."
                                 files))))))
             ;; Deduplicate files that resolve to the same physical file
             ;; (e.g. network drive aliases like Z: vs ~/interceptor).
+            ;; Use file-truename which resolves symlinks and drive mappings.
             (let ((seen (make-hash-table :test #'equal))
                   result)
               (dolist (f raw (nreverse result))
-                (let ((key (ignore-errors
-                             (file-attribute-file-identifier
-                              (file-attributes f)))))
-                  (if key
-                      (unless (gethash key seen)
-                        (puthash key t seen)
-                        (push f result))
-                    ;; Can't determine identity; include the file.
+                (let ((key (ignore-errors (file-truename f))))
+                  (unless (gethash (or key f) seen)
+                    (puthash (or key f) t seen)
                     (push f result)))))))
          (nfiles (length files))
          (id-regexp
