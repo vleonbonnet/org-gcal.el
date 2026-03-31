@@ -172,12 +172,23 @@ Set `epg-pinentry-mode` to `'loopback` to avoid hanging errors during sync (#267
 
 ** Multiple accounts
 
-   There's no support for multiple accounts.  If you want to use
-   org-gcal with calendars from different accounts, you can give
-   permissions to the account you configured via the calendar's
-   settings interface.
+   To sync calendars owned by different Google accounts, set
+   ~org-gcal-account-alist~ to map each calendar ID to the account
+   email that owns it:
 
-   To get more detailed information you can [[https://digibites.zendesk.com/hc/en-us/articles/200299863-How-do-I-share-my-calendar-with-someone-else-Google-Calendar-or-Outlook-com-][check this link]].
+   #+begin_src elisp
+   (setq org-gcal-account-alist
+         '(("work-calendar-id@group.calendar.google.com" . "you@work.com")))
+   #+end_src
+
+   Calendars not listed in ~org-gcal-account-alist~ fall back to
+   ~org-gcal-account~ (or the first calendar ID in
+   ~org-gcal-fetch-file-alist~).  Each account will trigger its own
+   OAuth browser authorization on first use.
+
+   If sharing a calendar with your primary account is possible, that
+   is simpler: grant permissions via the calendar's settings interface
+   ([[https://digibites.zendesk.com/hc/en-us/articles/200299863-How-do-I-share-my-calendar-with-someone-else-Google-Calendar-or-Outlook-com-][details]]) and no extra configuration is needed.
 
 ** Different timezone
 

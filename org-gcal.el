@@ -143,18 +143,30 @@ compatibility with configs that don't specify headings)."
         (error nil)))))
 
 (defcustom org-gcal-account nil
-  "Google account email used for OAuth authentication.
-All calendars in `org-gcal-fetch-file-alist' share a single OAuth
-token under this account, avoiding repeated browser authorization.
+  "Default Google account email used for OAuth authentication.
 When nil, falls back to the first calendar ID in
-`org-gcal-fetch-file-alist'."
+`org-gcal-fetch-file-alist'.  Per-calendar overrides can be set
+via `org-gcal-account-alist'."
   :group 'org-gcal
   :type '(choice (const :tag "Use first calendar ID" nil)
                  (string :tag "Google account email")))
 
-(defun org-gcal--account ()
-  "Return the Google account email for OAuth authentication."
-  (or org-gcal-account
+(defcustom org-gcal-account-alist nil
+  "Alist mapping calendar IDs to Google account emails.
+Each entry is (CALENDAR-ID . ACCOUNT-EMAIL).  When a calendar ID
+is not found here, `org-gcal-account' (or the first calendar ID
+in `org-gcal-fetch-file-alist') is used as the default."
+  :group 'org-gcal
+  :type '(alist :key-type (string :tag "Calendar ID")
+                :value-type (string :tag "Google account email")))
+
+(defun org-gcal--account (&optional calendar-id)
+  "Return the Google account email for CALENDAR-ID.
+Look up CALENDAR-ID in `org-gcal-account-alist'; if not found,
+fall back to `org-gcal-account' or the first calendar ID in
+`org-gcal-fetch-file-alist'."
+  (or (cdr (assoc calendar-id org-gcal-account-alist))
+      org-gcal-account
       (caar org-gcal-fetch-file-alist)))
 
 (defcustom org-gcal-logo-file nil
@@ -1591,24 +1603,20 @@ delete calendar info from events on calendars you no longer have access to."
                (deferred:succeed nil))))
         (deferred:succeed nil)))))
 
-(defun org-gcal--get-access-token (_calendar-id)
-  "Return the access token for the configured Google account.
-_CALENDAR-ID is accepted for compatibility but ignored; all
-calendars share a single OAuth token via `org-gcal--account'."
+(defun org-gcal--get-access-token (calendar-id)
+  "Return the access token for the account owning CALENDAR-ID."
   (aio-wait-for
-   (oauth2-auto-access-token (org-gcal--account) 'org-gcal)))
+   (oauth2-auto-access-token (org-gcal--account calendar-id) 'org-gcal)))
 
-(defun org-gcal--refresh-token (_calendar-id)
-  "Refresh OAuth access and return the new access token as a deferred object.
-_CALENDAR-ID is accepted for compatibility but ignored; all
-calendars share a single OAuth token via `org-gcal--account'."
+(defun org-gcal--refresh-token (calendar-id)
+  "Refresh OAuth access token for CALENDAR-ID and return it as a deferred."
   ;; FIXME: For now, we just synchronously wait for the refresh. Once the
   ;; project has been rewritten to use aio
   ;; (https://github.com/kidd/org-gcal.el/issues/191), we can wait for this
   ;; asynchronously as well.
   (let ((token
          (aio-wait-for
-          (oauth2-auto-access-token (org-gcal--account) 'org-gcal))))
+          (oauth2-auto-access-token (org-gcal--account calendar-id) 'org-gcal))))
     (deferred:succeed token)))
 
 ;;;###autoload
