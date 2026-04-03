@@ -232,7 +232,7 @@ When FILES is given, scan also these files."
         (org-mode)
         (dolist (file files)
           (condition-case err
-              (when-let
+              (when-let*
                   ((file
                     (car-safe
                      (org-generic-id-files-modified-since-modtime
@@ -493,7 +493,7 @@ FILE-TO-BUF, whose format is documented at ‘org-generic-id--files’."
     (if (not (eq 'unknown b))
         b
       (let* ((tmp (or (get-file-buffer file) (find-buffer-visiting file)))
-             (buf (when tmp (if-let ((base (buffer-base-buffer tmp))) base tmp))))
+             (buf (when tmp (if-let* ((base (buffer-base-buffer tmp))) base tmp))))
         (org-generic-id--files-buffer-hook-impl
          file-to-buf file buf)
         buf))))
