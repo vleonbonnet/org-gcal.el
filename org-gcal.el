@@ -1698,7 +1698,7 @@ heading."
          (old-start (plist-get old-time-desc :start))
          (old-end (plist-get old-time-desc :start))
          (recurrence (plist-get event :recurrence))
-         (elem))
+         (elem (org-element-at-point)))
     (when loc (replace-regexp-in-string "\n" ", " loc))
     (org-edit-headline
      (cond
@@ -1748,7 +1748,6 @@ heading."
     ;; Insert event time and description in :ORG-GCAL: drawer, erasing the
     ;; current contents.
     (org-gcal--back-to-heading)
-    (setq elem (org-element-at-point))
     (save-excursion
       (when (re-search-forward
              (format
