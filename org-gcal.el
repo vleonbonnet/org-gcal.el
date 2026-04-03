@@ -317,6 +317,12 @@ Values: see 'org-gcal-managed-newly-fetched-mode'."
 (defcustom org-gcal-recurring-events-mode 'top-level
   "How to treat instances of recurring events not already fetched.
 
+Can be a single mode symbol applied to all calendars, or an alist
+mapping calendar IDs to modes for per-calendar control.  When an
+alist, use t as a key for the default mode.
+
+Modes:
+
 - `top-level': insert all instances at the top level of the appropriate file for
   the calendar ID in `org-gcal-fetch-file-alist'.
 - `nested': insert instances of a recurring event under the Org-mode headline
@@ -326,12 +332,35 @@ Values: see 'org-gcal-managed-newly-fetched-mode'."
   (singleEvents=false) and creates parent headings with inactive timestamps and
   repeaters.  Pass 2 fetches all instances (singleEvents=true) and inserts them
   as child headings with active timestamps under the parent.  Cancelled instances
-  are removed.  Non-recurring events are handled normally with active timestamps."
+  are removed.  Non-recurring events are handled normally with active timestamps.
+
+Per-calendar example:
+
+  \\='((\"cal-id-1\" . :instances)
+    (\"cal-id-2\" . top-level)
+    (t          . :instances))"
   :group 'org-gcal
   :type '(choice
           (const :tag "Insert at top level" top-level)
           (const :tag "Insert under headline for parent event" nested)
-          (const :tag "Master + instances (dual-pass)" :instances)))
+          (const :tag "Master + instances (dual-pass)" :instances)
+          (alist :tag "Per-calendar modes"
+                 :key-type (choice (string :tag "Calendar ID")
+                                   (const :tag "Default" t))
+                 :value-type (choice
+                              (const :tag "Insert at top level" top-level)
+                              (const :tag "Insert under headline for parent event" nested)
+                              (const :tag "Master + instances (dual-pass)" :instances)))))
+
+(defun org-gcal--recurring-mode-for-calendar (calendar-id)
+  "Return the recurring events mode for CALENDAR-ID.
+When `org-gcal-recurring-events-mode' is an alist, look up CALENDAR-ID
+and fall back to the t entry or `top-level'."
+  (if (listp org-gcal-recurring-events-mode)
+      (or (cdr (assoc calendar-id org-gcal-recurring-events-mode))
+          (cdr (assoc t org-gcal-recurring-events-mode))
+          'top-level)
+    org-gcal-recurring-events-mode))
 
 (defcustom org-gcal-after-update-entry-functions nil
   "List of functions to run just before 'org-gcal--update-entry' returns.
@@ -519,19 +548,20 @@ SKIP-EXPORT.  Set SILENT to non-nil to inhibit notifications."
   "Sync events for CALENDAR-ID-FILE
 
 CALENDAR-ID-FILE is a cons in 'org-gcal-fetch-file-alist', for which see."
-  (if (eq org-gcal-recurring-events-mode :instances)
-      ;; Dual-pass: masters first, then instances.
-      (deferred:$
-       (org-gcal--sync-calendar-events
-        calendar-id-file skip-export silent nil up-time down-time nil
-        :masters)
-       (deferred:nextc it
-                       (lambda (_)
-                         (org-gcal--sync-calendar-events
-                          calendar-id-file skip-export silent nil up-time down-time nil
-                          :instances))))
-    (org-gcal--sync-calendar-events
-     calendar-id-file skip-export silent nil up-time down-time nil nil)))
+  (let ((mode (org-gcal--recurring-mode-for-calendar (car calendar-id-file))))
+    (if (eq mode :instances)
+        ;; Dual-pass: masters first, then instances.
+        (deferred:$
+         (org-gcal--sync-calendar-events
+          calendar-id-file skip-export silent nil up-time down-time nil
+          :masters)
+         (deferred:nextc it
+                         (lambda (_)
+                           (org-gcal--sync-calendar-events
+                            calendar-id-file skip-export silent nil up-time down-time nil
+                            :instances))))
+      (org-gcal--sync-calendar-events
+       calendar-id-file skip-export silent nil up-time down-time nil nil))))
 
 (defun org-gcal--sync-calendar-events
     (calendar-id-file skip-export silent page-token up-time down-time
