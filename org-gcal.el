@@ -413,6 +413,38 @@ entries."
   :group 'org-gcal
   :type 'string)
 
+(defcustom org-gcal-description-mode 'drawer
+  "Where to store event descriptions.
+
+When set to `drawer' (the default), descriptions are stored inside
+the org-gcal drawer alongside the timestamp.
+
+When set to `body', descriptions are stored in the entry body after
+all drawers, before the first sub-heading.  The org-gcal drawer
+retains only the timestamp.  In this mode the body region between
+drawers and the first sub-heading is owned by org-gcal and will be
+replaced on each sync — put user notes in sub-headings instead."
+  :group 'org-gcal
+  :type '(choice
+          (const :tag "Inside org-gcal drawer (default)" drawer)
+          (const :tag "In entry body after drawers" body)))
+
+(defcustom org-gcal-description-filter-function nil
+  "Optional function to transform event descriptions before insertion.
+
+Called with one argument — the raw description string from the
+Google Calendar API — and should return the transformed string.
+Useful for stripping boilerplate (e.g., Zoom details) or converting
+HTML to Org markup.
+
+Applied during `org-gcal--update-entry' before the description is
+written.  NOT applied on the read path, so the stored text is what
+gets pushed back to Google Calendar."
+  :group 'org-gcal
+  :type '(choice
+          (const :tag "No filter" nil)
+          (function :tag "Filter function")))
+
 (defcustom org-gcal-event-default-duration 5
   "Default duration of events in minutes."
   :group 'org-gcal
@@ -1369,6 +1401,17 @@ This will also update the stored ID locations using
   We always intend to go back to the invisible heading here."
   (org-back-to-heading 'invisible-ok))
 
+(defun org-gcal--delete-body-content ()
+  "Delete entry body content between end of metadata and next heading.
+Point must be on a heading.  The body region is everything after all
+drawers and planning lines, up to the next heading or end of subtree."
+  (save-excursion
+    (org-gcal--back-to-heading)
+    (let ((body-start (save-excursion (org-end-of-meta-data t) (point)))
+          (body-end (save-excursion (outline-next-heading) (point))))
+      (when (< body-start body-end)
+        (delete-region body-start body-end)))))
+
 (defun org-gcal--get-time-and-desc ()
   "Get the timestamp and description of the event at point.
 
@@ -1393,26 +1436,40 @@ This will also update the stored ID locations using
                                  'noerror)
             (goto-char (match-beginning 0))
             (setq tobj (org-element-timestamp-parser))))
-        ;; Lines after the timestamp contain the description. Skip leading
-        ;; blank lines.
-        (forward-line)
-        (beginning-of-line)
-        (re-search-forward
-         "\\(?:^[ \t]*$\\)*\\([^z-a]*?\\)\n?[ \t]*:END:"
-         (save-excursion (outline-next-heading) (point)))
-        (setq desc (match-string-no-properties 1))
-        (setq desc
-              (if (string-match-p "\\'\n*\\'" desc)
-                  nil
-                (replace-regexp-in-string
-                 "^✱" "*"
-                 (replace-regexp-in-string
-                  "\\`\\(?: *<[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].*?>$\\)\n?\n?"
-                  ""
+        ;; Read description based on org-gcal-description-mode.
+        (if (eq org-gcal-description-mode 'body)
+            ;; Body mode: description is after all drawers/metadata,
+            ;; before the next heading.
+            (save-excursion
+              (org-gcal--back-to-heading)
+              (org-end-of-meta-data t)
+              (let* ((body-start (point))
+                     (body-end (save-excursion
+                                 (outline-next-heading) (point)))
+                     (raw (string-trim
+                           (buffer-substring-no-properties
+                            body-start body-end))))
+                (setq desc (if (string-empty-p raw) nil raw))))
+          ;; Drawer mode: description follows the timestamp inside
+          ;; the drawer.  Skip leading blank lines.
+          (forward-line)
+          (beginning-of-line)
+          (re-search-forward
+           "\\(?:^[ \t]*$\\)*\\([^z-a]*?\\)\n?[ \t]*:END:"
+           (save-excursion (outline-next-heading) (point)))
+          (setq desc (match-string-no-properties 1))
+          (setq desc
+                (if (string-match-p "\\`\n*\\'" desc)
+                    nil
                   (replace-regexp-in-string
-                   " *:PROPERTIES:\n *\\(.*\\(?:\n.*\\)*?\\) *:END:\n+"
-                   ""
-                   desc)))))))
+                   "^✱" "*"
+                   (replace-regexp-in-string
+                    "\\`\\(?: *<[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].*?>$\\)\n?\n?"
+                    ""
+                    (replace-regexp-in-string
+                     " *:PROPERTIES:\n *\\(.*\\(?:\n.*\\)*?\\) *:END:\n+"
+                     ""
+                     desc))))))))
     ;; Prefer to read event time from the SCHEDULED property if present.
     (setq tobj (or (org-element-property :scheduled elem) tobj))
     (when tobj
@@ -2072,13 +2129,34 @@ heading.
 
 When INACTIVE is non-nil, use inactive timestamps (square brackets) and skip
 SCHEDULED.  Used for master recurring events in `instances' mode."
+  (catch 'org-gcal--skip-update
+  ;; Multi-instance safety: the same file may be open in another
+  ;; Emacs running org-gcal.  If locked by another process, skip
+  ;; this update — the next sync cycle will retry.  Otherwise
+  ;; reload from disk if it changed externally.
+  (when (buffer-file-name)
+    (let ((lock (file-locked-p (buffer-file-name))))
+      (when (stringp lock)
+        (message "org-gcal: %s locked by %s, skipping update"
+                 (buffer-name) lock)
+        (throw 'org-gcal--skip-update nil)))
+    (unless (verify-visited-file-modtime)
+      (revert-buffer t t)))
   (unless (org-at-heading-p)
     (user-error "Must be on Org-mode heading."))
+  ;; Wrap modifications in unwind-protect so we save on success
+  ;; and revert on error — either way the lock is released.
+  (let ((org-gcal--update-ok nil))
+    (unwind-protect
+        (progn
   (let* ((smry  (plist-get event :summary))
          (desc  (when-let* ((d (plist-get event :description)))
-                  (if (org-gcal--strip-html-p calendar-id)
-                      (org-gcal--strip-html d)
-                    d)))
+                  (let ((d (if (org-gcal--strip-html-p calendar-id)
+                               (org-gcal--strip-html d)
+                             d)))
+                    (if org-gcal-description-filter-function
+                        (funcall org-gcal-description-filter-function d)
+                      d))))
          (loc   (plist-get event :location))
          (source (plist-get event :source))
          (transparency   (plist-get event :transparency))
@@ -2160,6 +2238,9 @@ SCHEDULED.  Used for master recurring events in `instances' mode."
              (save-excursion (outline-next-heading) (point))
              'noerror)
         (replace-match "" 'fixedcase)))
+    ;; In body mode (or when migrating between modes), clear old body
+    ;; content so it can be replaced with the fresh description.
+    (org-gcal--delete-body-content)
     (unless (re-search-forward ":PROPERTIES:[^z-a]*?:END:"
                                (save-excursion (outline-next-heading) (point))
                                'noerror)
@@ -2209,11 +2290,22 @@ SCHEDULED.  Used for master recurring events in `instances' mode."
         (insert timestamp)
         (newline)
         (when desc (newline))))
-    ;; Insert event description if present.
-    (when desc
-      (insert (replace-regexp-in-string "^\*" "✱" desc))
-      (insert (if (string= "\n" (org-gcal--safe-substring desc -1)) "" "\n")))
-    (insert ":END:")
+    ;; Insert event description.
+    (if (eq org-gcal-description-mode 'body)
+        (progn
+          ;; Body mode: close drawer (timestamp only), then put
+          ;; description in the entry body after the drawer.
+          (insert ":END:")
+          (when desc
+            (newline)
+            (insert desc)
+            (unless (string= "\n" (org-gcal--safe-substring desc -1))
+              (insert "\n"))))
+      ;; Drawer mode (default): description inside drawer, then close.
+      (when desc
+        (insert (replace-regexp-in-string "^\*" "✱" desc))
+        (insert (if (string= "\n" (org-gcal--safe-substring desc -1)) "" "\n")))
+      (insert ":END:"))
     (when (org-gcal--event-cancelled-p event)
       (save-excursion
         (org-back-to-heading t)
@@ -2222,7 +2314,20 @@ SCHEDULED.  Used for master recurring events in `instances' mode."
       (cl-dolist (f org-gcal-after-update-entry-functions)
         (save-excursion
           (org-back-to-heading t)
-          (funcall f calendar-id event update-mode))))))
+          (funcall f calendar-id event update-mode))))
+    ;; Save immediately so other Emacs instances see our changes on
+    ;; their next revert.
+    (when (and (buffer-file-name) (buffer-modified-p))
+      (save-buffer)))
+          (setq org-gcal--update-ok t))
+      ;; Cleanup: on error, revert to undo partial changes and
+      ;; release the file lock.
+      (when (and (not org-gcal--update-ok)
+                 (buffer-file-name)
+                 (buffer-modified-p))
+        (message "org-gcal: error updating %s, reverting"
+                 (buffer-name))
+        (revert-buffer t t))))))
 
 
 (defun org-gcal--handle-cancelled-entry ()
