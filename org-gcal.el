@@ -2129,26 +2129,8 @@ heading.
 
 When INACTIVE is non-nil, use inactive timestamps (square brackets) and skip
 SCHEDULED.  Used for master recurring events in `instances' mode."
-  (catch 'org-gcal--skip-update
-  ;; Multi-instance safety: the same file may be open in another
-  ;; Emacs running org-gcal.  If locked by another process, skip
-  ;; this update — the next sync cycle will retry.  Otherwise
-  ;; reload from disk if it changed externally.
-  (when (buffer-file-name)
-    (let ((lock (file-locked-p (buffer-file-name))))
-      (when (stringp lock)
-        (message "org-gcal: %s locked by %s, skipping update"
-                 (buffer-name) lock)
-        (throw 'org-gcal--skip-update nil)))
-    (unless (verify-visited-file-modtime)
-      (revert-buffer t t)))
   (unless (org-at-heading-p)
     (user-error "Must be on Org-mode heading."))
-  ;; Wrap modifications in unwind-protect so we save on success
-  ;; and revert on error — either way the lock is released.
-  (let ((org-gcal--update-ok nil))
-    (unwind-protect
-        (progn
   (let* ((smry  (plist-get event :summary))
          (desc  (when-let* ((d (plist-get event :description)))
                   (let ((d (if (org-gcal--strip-html-p calendar-id)
@@ -2315,19 +2297,7 @@ SCHEDULED.  Used for master recurring events in `instances' mode."
         (save-excursion
           (org-back-to-heading t)
           (funcall f calendar-id event update-mode))))
-    ;; Save immediately so other Emacs instances see our changes on
-    ;; their next revert.
-    (when (and (buffer-file-name) (buffer-modified-p))
-      (save-buffer)))
-          (setq org-gcal--update-ok t))
-      ;; Cleanup: on error, revert to undo partial changes and
-      ;; release the file lock.
-      (when (and (not org-gcal--update-ok)
-                 (buffer-file-name)
-                 (buffer-modified-p))
-        (message "org-gcal: error updating %s, reverting"
-                 (buffer-name))
-        (revert-buffer t t))))))
+    ))
 
 
 (defun org-gcal--handle-cancelled-entry ()
