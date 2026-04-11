@@ -2644,6 +2644,7 @@ SCHEDULED.  Used for master recurring events in `instances' mode."
       ;; Insert timestamp(s) and description.
       (if (eq org-gcal-description-mode 'body)
           ;; Body mode: bare timestamps + description in body, no drawer.
+          ;; Format: blank line, timestamp(s), blank line, description.
           (progn
             (if (and (not inactive) (org-element-property :scheduled elem))
                 (let ((org-closed-keep-when-no-todo t))
@@ -2653,13 +2654,11 @@ SCHEDULED.  Used for master recurring events in `instances' mode."
                   (org-back-to-heading t)
                   (let ((org-closed-keep-when-no-todo t))
                     (org-schedule '(4)))))
-              (newline)
+              (insert "\n\n")
               (dolist (ts timestamps)
-                (insert ts)
-                (newline)))
+                (insert ts "\n")))
             (when desc
-              (newline)
-              (insert desc)
+              (insert "\n" desc)
               (unless (string= "\n" (org-gcal--safe-substring desc -1))
                 (insert "\n"))))
       ;; Drawer mode (default): timestamp + description inside drawer.
