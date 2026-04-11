@@ -1464,35 +1464,52 @@ drawers and planning lines, up to the next heading or end of subtree."
     (save-excursion
       (org-gcal--back-to-heading)
       (setq elem (org-element-at-point))
-      ;; Parse :org-gcal: drawer for event time and description.
-      (when
-          (re-search-forward
-           (format "^[ \t]*:%s:[ \t]*$" org-gcal-drawer-name)
-           (save-excursion (outline-next-heading) (point))
-           'noerror)
-        ;; First read any event time from the drawer if present. It's located
-        ;; at the beginning of the drawer.
-        (save-excursion
-          (when
-              (re-search-forward "<[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]"
-                                 (save-excursion (outline-next-heading) (point))
-                                 'noerror)
-            (goto-char (match-beginning 0))
-            (setq tobj (org-element-timestamp-parser))))
-        ;; Read description based on org-gcal-description-mode.
-        (if (eq org-gcal-description-mode 'body)
-            ;; Body mode: description is after all drawers/metadata,
-            ;; before the next heading.
-            (save-excursion
-              (org-gcal--back-to-heading)
-              (org-end-of-meta-data t)
-              (let* ((body-start (point))
-                     (body-end (save-excursion
-                                 (outline-next-heading) (point)))
-                     (raw (string-trim
-                           (buffer-substring-no-properties
-                            body-start body-end))))
-                (setq desc (if (string-empty-p raw) nil raw))))
+      ;; Find event time: check drawer first, then body.
+      (save-excursion
+        (let ((limit (save-excursion (outline-next-heading) (point))))
+          ;; Try drawer.
+          (when (re-search-forward
+                 (format "^[ \t]*:%s:[ \t]*$" org-gcal-drawer-name)
+                 limit 'noerror)
+            (when (re-search-forward
+                   "<[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]"
+                   limit 'noerror)
+              (goto-char (match-beginning 0))
+              (setq tobj (org-element-timestamp-parser))))
+          ;; If no timestamp in drawer (body mode), try body.
+          (unless tobj
+            (org-gcal--back-to-heading)
+            (org-end-of-meta-data t)
+            (when (re-search-forward
+                   "[<\\[][0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]"
+                   limit 'noerror)
+              (goto-char (match-beginning 0))
+              (setq tobj (org-element-timestamp-parser))))))
+      ;; Read description.
+      (if (eq org-gcal-description-mode 'body)
+          ;; Body mode: description is after all drawers/metadata and
+          ;; timestamps, before the next heading.
+          (save-excursion
+            (org-gcal--back-to-heading)
+            (org-end-of-meta-data t)
+            ;; Skip past bare timestamp lines.
+            (while (looking-at "^[<\\[].*[>\\]]\\s-*$")
+              (forward-line))
+            ;; Skip blank lines between timestamps and description.
+            (while (looking-at "^\\s-*$")
+              (forward-line))
+            (let* ((body-start (point))
+                   (body-end (save-excursion
+                               (outline-next-heading) (point)))
+                   (raw (string-trim
+                         (buffer-substring-no-properties
+                          body-start body-end))))
+              (setq desc (if (string-empty-p raw) nil raw))))
+        ;; Drawer mode: find the drawer.
+        (when (re-search-forward
+               (format "^[ \t]*:%s:[ \t]*$" org-gcal-drawer-name)
+               (save-excursion (outline-next-heading) (point))
+               'noerror)
           ;; Drawer mode: description follows the timestamp inside
           ;; the drawer.  Skip leading blank lines.
           (forward-line)
@@ -2177,22 +2194,36 @@ exceptions exist (meaning the parent's existing repeater suffices)."
             (nreverse result)))))))
 
 (defun org-gcal--update-parent-timestamps (parent-marker timestamps)
-  "Replace the timestamp(s) in the :org-gcal: drawer at PARENT-MARKER.
-TIMESTAMPS is a list of inactive timestamp strings."
+  "Replace the timestamp(s) at PARENT-MARKER with TIMESTAMPS.
+In body mode, replaces bare timestamp lines after metadata.
+In drawer mode, replaces timestamps inside the :org-gcal: drawer."
   (org-with-point-at parent-marker
     (let ((sub-end (save-excursion
                      (if (outline-next-heading) (point) (point-max)))))
-      (when (re-search-forward
-             (format "^[ \t]*:%s:" (regexp-quote org-gcal-drawer-name))
-             sub-end t)
-        (forward-line)
-        (let ((ts-start (point)))
-          (when (re-search-forward "^[ \t]*:END:" sub-end t)
-            (let ((ts-end (line-beginning-position)))
-              (delete-region ts-start ts-end)
-              (goto-char ts-start)
+      (if (eq org-gcal-description-mode 'body)
+          ;; Body mode: replace bare timestamp lines after metadata.
+          (progn
+            (org-end-of-meta-data t)
+            (let ((ts-start (point)))
+              ;; Delete existing timestamp lines.
+              (while (and (< (point) sub-end)
+                          (looking-at "^[<\\[].*[>\\]]\\s-*$"))
+                (delete-region (point) (min (1+ (line-end-position)) sub-end)))
+              ;; Insert new timestamps.
               (dolist (ts timestamps)
-                (insert ts "\n")))))))))
+                (insert ts "\n"))))
+        ;; Drawer mode: replace inside :org-gcal: drawer.
+        (when (re-search-forward
+               (format "^[ \t]*:%s:" (regexp-quote org-gcal-drawer-name))
+               sub-end t)
+          (forward-line)
+          (let ((ts-start (point)))
+            (when (re-search-forward "^[ \t]*:END:" sub-end t)
+              (let ((ts-end (line-beginning-position)))
+                (delete-region ts-start ts-end)
+                (goto-char ts-start)
+                (dolist (ts timestamps)
+                  (insert ts "\n"))))))))))
 
 (defun org-gcal--compact-instances (calendar-id calendar-file)
   "Process collected instances, inserting only modified ones as children.
@@ -2552,8 +2583,7 @@ SCHEDULED.  Used for master recurring events in `instances' mode."
                "Join Hangouts Meet")))
     (org-entry-put (point) org-gcal-calendar-id-property calendar-id)
     (org-gcal--put-id (point) calendar-id event-id)
-    ;; Insert event time and description in :ORG-GCAL: drawer, erasing the
-    ;; current contents.
+    ;; Erase existing drawer and body content.
     (org-gcal--back-to-heading)
     (save-excursion
       (when (re-search-forward
@@ -2563,8 +2593,6 @@ SCHEDULED.  Used for master recurring events in `instances' mode."
              (save-excursion (outline-next-heading) (point))
              'noerror)
         (replace-match "" 'fixedcase)))
-    ;; In body mode (or when migrating between modes), clear old body
-    ;; content so it can be replaced with the fresh description.
     (org-gcal--delete-body-content)
     (unless (re-search-forward ":PROPERTIES:[^z-a]*?:END:"
                                (save-excursion (outline-next-heading) (point))
@@ -2572,11 +2600,7 @@ SCHEDULED.  Used for master recurring events in `instances' mode."
       (message "PROPERTIES not found: %s (%s) %d"
                (buffer-name) (buffer-file-name) (point)))
     (end-of-line)
-    (newline)
-    (insert (format ":%s:" org-gcal-drawer-name))
-    (newline)
-    ;; For multi-BYDAY weekly rules on inactive masters, emit one
-    ;; timestamp per day (each with +1w).  Otherwise single timestamp.
+    ;; Build timestamp(s).
     (let* ((expand-days
             (when (and inactive recurrence)
               (org-gcal--rrule-expand-days recurrence)))
@@ -2607,7 +2631,6 @@ SCHEDULED.  Used for master recurring events in `instances' mode."
                            nil nil inactive))))))
            (timestamps
             (if expand-days
-                ;; Multi-BYDAY: one timestamp per day, each +1w.
                 (let ((start-dow (plist-get (org-gcal--parse-date start) :dow)))
                   (mapcar
                    (lambda (day-pair)
@@ -2617,12 +2640,35 @@ SCHEDULED.  Used for master recurring events in `instances' mode."
                                        end (cdr day-pair) start-dow)))
                        (funcall make-ts shifted-s shifted-e "+1w")))
                    expand-days))
-              ;; Single timestamp.
               (list (funcall make-ts start end repeater)))))
+      ;; Insert timestamp(s) and description.
+      (if (eq org-gcal-description-mode 'body)
+          ;; Body mode: bare timestamps + description in body, no drawer.
+          (progn
+            (if (and (not inactive) (org-element-property :scheduled elem))
+                (let ((org-closed-keep-when-no-todo t))
+                  (org-schedule nil (car timestamps)))
+              (when (and inactive (org-element-property :scheduled elem))
+                (save-excursion
+                  (org-back-to-heading t)
+                  (let ((org-closed-keep-when-no-todo t))
+                    (org-schedule '(4)))))
+              (newline)
+              (dolist (ts timestamps)
+                (insert ts)
+                (newline)))
+            (when desc
+              (newline)
+              (insert desc)
+              (unless (string= "\n" (org-gcal--safe-substring desc -1))
+                (insert "\n"))))
+      ;; Drawer mode (default): timestamp + description inside drawer.
+      (newline)
+      (insert (format ":%s:" org-gcal-drawer-name))
+      (newline)
       (if (and (not inactive) (org-element-property :scheduled elem))
           (let ((org-closed-keep-when-no-todo t))
             (org-schedule nil (car timestamps)))
-        ;; When switching to inactive, remove any existing SCHEDULED.
         (when (and inactive (org-element-property :scheduled elem))
           (save-excursion
             (org-back-to-heading t)
@@ -2631,23 +2677,11 @@ SCHEDULED.  Used for master recurring events in `instances' mode."
         (dolist (ts timestamps)
           (insert ts)
           (newline))
-        (when desc (newline))))
-    ;; Insert event description.
-    (if (eq org-gcal-description-mode 'body)
-        (progn
-          ;; Body mode: close drawer (timestamp only), then put
-          ;; description in the entry body after the drawer.
-          (insert ":END:")
-          (when desc
-            (newline)
-            (insert desc)
-            (unless (string= "\n" (org-gcal--safe-substring desc -1))
-              (insert "\n"))))
-      ;; Drawer mode (default): description inside drawer, then close.
+        (when desc (newline)))
       (when desc
         (insert (replace-regexp-in-string "^\*" "✱" desc))
         (insert (if (string= "\n" (org-gcal--safe-substring desc -1)) "" "\n")))
-      (insert ":END:"))
+      (insert ":END:")))
     (when (org-gcal--event-cancelled-p event)
       (save-excursion
         (org-back-to-heading t)
