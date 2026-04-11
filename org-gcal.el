@@ -967,11 +967,7 @@ Any parent recurring events are appended in-place to the list PARENT-EVENTS."
         ;; In instances pass 2, also remove the child heading's subtree.
         ((and marker (org-gcal--event-cancelled-p event))
          (org-with-point-at marker
-           (if (eq instances-pass :instances)
-               ;; Remove the cancelled instance heading entirely.
-               (delete-region (org-entry-beginning-position)
-                              (org-entry-end-position))
-             (org-gcal--handle-cancelled-entry)))
+           (org-gcal--handle-cancelled-entry))
          nil)
         ;; If event is present, collect it for later processing.
         (marker
@@ -2177,7 +2173,7 @@ exceptions exist (meaning the parent's existing repeater suffices)."
                                (e (format-time-string "%H:%M" end-time)))
                           (push (format "[%s-%s]" s e) result)))))
                     (setq cur-d (org-gcal--rrule-next-instance
-                                 cur-d freq interval nil)))
+                                 cur-d freq interval byday)))
                   ;; Final timestamp: next instance after all specials.
                   (let ((final-time (encode-time cur-d)))
                     (unless (and until-time (time-less-p until-time final-time))
@@ -2532,12 +2528,12 @@ SCHEDULED.  Used for master recurring events in `instances' mode."
          (end   (if etime (org-gcal--convert-time-to-local-timezone etime org-gcal-local-timezone) eday))
          (old-time-desc (org-gcal--get-time-and-desc))
          (old-start (plist-get old-time-desc :start))
-         (old-end (plist-get old-time-desc :start))
+         (old-end (plist-get old-time-desc :end))
          (recurrence (plist-get event :recurrence))
          (repeater (or (plist-get event :org-gcal-repeater)
                        (org-gcal--rrule-to-repeater recurrence)))
          (elem (org-element-at-point)))
-    (when loc (replace-regexp-in-string "\n" ", " loc))
+    (when loc (setq loc (replace-regexp-in-string "\n" ", " loc)))
     (org-edit-headline
      (cond
       ;; Don't update headline if the new summary is the same as the CANCELLED
