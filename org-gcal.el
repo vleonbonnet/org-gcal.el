@@ -2276,7 +2276,7 @@ timestamps with exception-aware compaction."
                (when existing (set-marker existing nil))))
            ;; Prune existing child headings for unmodified instances.
            (org-gcal--prune-unmodified-children
-            parent-marker parent-event calendar-id instances))
+            parent-marker parent-event calendar-id instances)))
          (when parent-marker (set-marker parent-marker nil)))))
    org-gcal--instance-collector))
 
