@@ -975,6 +975,13 @@ Any parent recurring events are appended in-place to the list PARENT-EVENTS."
          nil)
         ;; If event is present, collect it for later processing.
         (marker
+         ;; Also feed existing instances into the collector for compaction.
+         (when (and (eq instances-pass :instances)
+                    recurring-event-id
+                    org-gcal--instance-collector
+                    (gethash recurring-event-id org-gcal--parent-event-cache))
+           (push event (gethash recurring-event-id
+                                org-gcal--instance-collector)))
          (org-gcal--event-entry-create
           :entry-id entry-id
           :marker marker
@@ -2034,27 +2041,158 @@ INTERVAL is the repeat interval.  BYDAY is the BYDAY value
 (defun org-gcal--instance-modified-p (instance-event parent-event)
   "Return non-nil if INSTANCE-EVENT differs from the parent RRULE prediction.
 Compares summary, start time (against originalStartTime), and duration.
-PARENT-EVENT is the master event plist from pass 1."
-  (or
-   ;; Summary changed.
-   (not (equal (plist-get instance-event :summary)
-               (plist-get parent-event :summary)))
-   ;; Start time differs from originalStartTime (time was moved).
-   (let ((start (or (plist-get (plist-get instance-event :start) :dateTime)
-                    (plist-get (plist-get instance-event :start) :date)))
-         (orig (or (plist-get (plist-get instance-event :originalStartTime) :dateTime)
-                   (plist-get (plist-get instance-event :originalStartTime) :date))))
-     (and start orig (not (equal start orig))))
-   ;; Duration differs from master.
-   (condition-case nil
+PARENT-EVENT is the master event plist from pass 1.
+Returns t if modified, nil if unmodified.  When in doubt (missing
+fields), returns nil to avoid creating unnecessary child headings."
+  (condition-case nil
+      (or
+       ;; Summary changed.
+       (not (equal (plist-get instance-event :summary)
+                   (plist-get parent-event :summary)))
+       ;; Start time differs from originalStartTime (time was moved).
+       (when-let* ((orig-time (plist-get instance-event :originalStartTime))
+                   (start (or (plist-get (plist-get instance-event :start) :dateTime)
+                              (plist-get (plist-get instance-event :start) :date)))
+                   (orig (or (plist-get orig-time :dateTime)
+                             (plist-get orig-time :date))))
+         (not (equal start orig)))
+       ;; Duration differs from master.
        (let ((i-dur (time-subtract
                      (org-gcal--parse-calendar-time (plist-get instance-event :end))
                      (org-gcal--parse-calendar-time (plist-get instance-event :start))))
              (p-dur (time-subtract
                      (org-gcal--parse-calendar-time (plist-get parent-event :end))
                      (org-gcal--parse-calendar-time (plist-get parent-event :start)))))
-         (not (equal i-dur p-dur)))
-     (error nil))))
+         (not (equal i-dur p-dur))))
+    (error nil)))
+
+(defun org-gcal--build-exception-aware-timestamps
+    (parent-event modified-instances cancelled-instances)
+  "Build a list of inactive Org timestamp strings for a recurring event.
+PARENT-EVENT is the master event plist.  MODIFIED-INSTANCES and
+CANCELLED-INSTANCES are lists of instance event plists.
+Returns a list of inactive timestamp strings, or nil if no
+exceptions exist (meaning the parent's existing repeater suffices)."
+  (when (or modified-instances cancelled-instances)
+    (let* ((recurrence (plist-get parent-event :recurrence))
+           (pairs (org-gcal--rrule-parse recurrence))
+           (freq (cdr (assoc "FREQ" pairs)))
+           (interval (string-to-number (or (cdr (assoc "INTERVAL" pairs)) "1")))
+           (byday (cdr (assoc "BYDAY" pairs)))
+           (until-str (cdr (assoc "UNTIL" pairs)))
+           (until-time (when until-str
+                         (org-gcal--parse-calendar-time-string until-str))))
+      (when freq
+        ;; Build lookup: date-key -> modified event or 'cancelled.
+        (let ((special-dates (make-hash-table :test 'equal))
+              (last-special-time nil))
+          (dolist (inst modified-instances)
+            (let* ((orig-time (org-gcal--parse-calendar-time
+                               (plist-get inst :originalStartTime)))
+                   (date-key (format-time-string "%Y-%m-%d" orig-time)))
+              (puthash date-key inst special-dates)
+              (when (or (null last-special-time)
+                        (time-less-p last-special-time orig-time))
+                (setq last-special-time orig-time))))
+          (dolist (inst cancelled-instances)
+            (let* ((orig-time (org-gcal--parse-calendar-time
+                               (or (plist-get inst :originalStartTime)
+                                   (plist-get inst :start))))
+                   (date-key (format-time-string "%Y-%m-%d" orig-time)))
+              (puthash date-key 'cancelled special-dates)
+              (when (or (null last-special-time)
+                        (time-less-p last-special-time orig-time))
+                (setq last-special-time orig-time))))
+          ;; Walk RRULE instances from master DTSTART to last-special-time.
+          (let* ((master-start (org-gcal--parse-calendar-time
+                                (plist-get parent-event :start)))
+                 (master-end (org-gcal--parse-calendar-time
+                              (plist-get parent-event :end)))
+                 (master-dur (time-subtract master-end master-start))
+                 (cur-decoded (decode-time master-start))
+                 (result nil))
+            ;; Multi-BYDAY: collect day offsets for multi-stream walk.
+            (let* ((expand-days (org-gcal--rrule-expand-days recurrence))
+                   (day-streams
+                    (if (and expand-days (string= freq "WEEKLY"))
+                        ;; Multiple day streams, each walks independently.
+                        (let ((start-dow (decoded-time-weekday
+                                          (decode-time master-start))))
+                          (mapcar
+                           (lambda (dp)
+                             (let* ((offset (mod (- (cdr dp) start-dow) 7))
+                                    (shifted (time-add master-start
+                                                       (seconds-to-time
+                                                        (* offset 86400)))))
+                               (decode-time shifted)))
+                           expand-days))
+                      ;; Single stream.
+                      (list cur-decoded))))
+              ;; For each stream, walk to last-special-time, then add repeater.
+              (dolist (stream-start day-streams)
+                (let ((cur-d (copy-sequence stream-start)))
+                  ;; Walk instances up to last-special-time.
+                  (while (not (time-less-p last-special-time
+                                           (encode-time cur-d)))
+                    (let* ((cur-time (encode-time cur-d))
+                           (date-key (format-time-string "%Y-%m-%d" cur-time))
+                           (special (gethash date-key special-dates))
+                           (past-until (and until-time
+                                           (time-less-p until-time cur-time))))
+                      (cond
+                       (past-until nil)
+                       ((eq special 'cancelled) nil)
+                       ;; Modified instance: use its actual time.
+                       (special
+                        (let* ((inst-start (org-gcal--parse-calendar-time
+                                            (plist-get special :start)))
+                               (inst-end (org-gcal--parse-calendar-time
+                                           (plist-get special :end)))
+                               (s (format-time-string "%Y-%m-%d %a %H:%M"
+                                                      inst-start))
+                               (e (format-time-string "%H:%M" inst-end)))
+                          (push (format "[%s-%s]" s e) result)))
+                       ;; Regular instance: use master's time pattern.
+                       (t
+                        (let* ((s (format-time-string "%Y-%m-%d %a %H:%M"
+                                                      cur-time))
+                               (end-time (time-add cur-time master-dur))
+                               (e (format-time-string "%H:%M" end-time)))
+                          (push (format "[%s-%s]" s e) result)))))
+                    (setq cur-d (org-gcal--rrule-next-instance
+                                 cur-d freq interval nil)))
+                  ;; Final timestamp: next instance after all specials.
+                  (let ((final-time (encode-time cur-d)))
+                    (unless (and until-time (time-less-p until-time final-time))
+                      (let* ((s (format-time-string "%Y-%m-%d %a %H:%M"
+                                                    final-time))
+                             (end-time (time-add final-time master-dur))
+                             (e (format-time-string "%H:%M" end-time))
+                             (repeater (unless until-time
+                                         (format " +%d%s" interval
+                                                 (downcase
+                                                  (substring freq 0 1))))))
+                        (push (format "[%s-%s%s]" s e (or repeater ""))
+                              result)))))))
+            (nreverse result)))))))
+
+(defun org-gcal--update-parent-timestamps (parent-marker timestamps)
+  "Replace the timestamp(s) in the :org-gcal: drawer at PARENT-MARKER.
+TIMESTAMPS is a list of inactive timestamp strings."
+  (org-with-point-at parent-marker
+    (let ((sub-end (save-excursion
+                     (if (outline-next-heading) (point) (point-max)))))
+      (when (re-search-forward
+             (format "^[ \t]*:%s:" (regexp-quote org-gcal-drawer-name))
+             sub-end t)
+        (forward-line)
+        (let ((ts-start (point)))
+          (when (re-search-forward "^[ \t]*:END:" sub-end t)
+            (let ((ts-end (line-beginning-position)))
+              (delete-region ts-start ts-end)
+              (goto-char ts-start)
+              (dolist (ts timestamps)
+                (insert ts "\n")))))))))
 
 (defun org-gcal--compact-instances (calendar-id calendar-file)
   "Process collected instances, inserting only modified ones as children.
@@ -2080,8 +2218,14 @@ timestamps with exception-aware compaction."
                (push event modified))
               (t (cl-incf unmodified-count))))
            (message "org-gcal compact %s: %d modified, %d cancelled, %d unmodified"
-                      recurring-event-id
-                      (length modified) (length cancelled) unmodified-count))
+                    recurring-event-id
+                    (length modified) (length cancelled) unmodified-count)
+           ;; Rebuild parent timestamps with exception-aware compaction.
+           (when (or modified cancelled)
+             (let ((new-ts (org-gcal--build-exception-aware-timestamps
+                            parent-event modified cancelled)))
+               (when new-ts
+                 (org-gcal--update-parent-timestamps parent-marker new-ts))))
            ;; Insert child headings only for modified instances that
            ;; don't already have a heading.
            (dolist (event modified)
