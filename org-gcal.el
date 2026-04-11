@@ -486,6 +486,17 @@ Returns a URL for recurrent event EVENT-ID on calendar CALENDAR-ID."
   ;; When non-nil, use inactive timestamps for this entry.
   inactive)
 
+(defvar org-gcal--parent-event-cache nil
+  "Hash table mapping recurring event IDs to their master event plists.
+Populated during pass 1 (:masters) and read during pass 2 (:instances)
+of the dual-pass sync.  Dynamically bound around the dual-pass flow.")
+
+(defvar org-gcal--instance-collector nil
+  "Hash table mapping recurringEventId to lists of instance event plists.
+Populated during pass 2 (:instances) of the dual-pass sync, processed
+by `org-gcal--compact-instances' after the event loop.  Dynamically
+bound around the dual-pass flow.")
+
 (persist-defvar
   org-gcal--sync-tokens nil
   "Storage for Calendar API sync tokens, used for performing incremental sync.
@@ -583,15 +594,24 @@ CALENDAR-ID-FILE is a cons in 'org-gcal-fetch-file-alist', for which see."
   (let ((mode (org-gcal--recurring-mode-for-calendar (car calendar-id-file))))
     (if (eq mode :instances)
         ;; Dual-pass: masters first, then instances.
-        (deferred:$
-         (org-gcal--sync-calendar-events
-          calendar-id-file skip-export silent nil up-time down-time nil
-          :masters)
-         (deferred:nextc it
-                         (lambda (_)
-                           (org-gcal--sync-calendar-events
-                            calendar-id-file skip-export silent nil up-time down-time nil
-                            :instances))))
+        ;; Use setq (not let) because deferred callbacks run outside
+        ;; the dynamic scope of any let binding.
+        (progn
+          (setq org-gcal--parent-event-cache (make-hash-table :test 'equal)
+                org-gcal--instance-collector (make-hash-table :test 'equal))
+          (deferred:$
+           (org-gcal--sync-calendar-events
+            calendar-id-file skip-export silent nil up-time down-time nil
+            :masters)
+           (deferred:nextc it
+                           (lambda (_)
+                             (org-gcal--sync-calendar-events
+                              calendar-id-file skip-export silent nil up-time down-time nil
+                              :instances)))
+           (deferred:nextc it
+                           (lambda (_)
+                             (setq org-gcal--parent-event-cache nil
+                                   org-gcal--instance-collector nil)))))
       (org-gcal--sync-calendar-events
        calendar-id-file skip-export silent nil up-time down-time nil nil))))
 
@@ -891,39 +911,50 @@ Any parent recurring events are appended in-place to the list PARENT-EVENTS."
             ;; In instances mode, master recurring events get inactive
             ;; timestamps; non-recurring events stay active.
             (inactive-p (and (eq instances-pass :masters) recurrence)))
+       ;; Cache master events for pass 2 compaction.
+       (when (and (eq instances-pass :masters) recurrence
+                  org-gcal--parent-event-cache)
+         (puthash (plist-get event :id) event
+                  org-gcal--parent-event-cache))
        (cond
         ;; --- instances mode: pass 2 (instances) ---
         ;; Skip non-recurring events (handled in pass 1).
         ((and (eq instances-pass :instances)
               (not recurring-event-id))
          nil)
-        ;; Instance of a recurring event: insert as child of parent heading.
+        ;; Instance of a recurring event: collect for compaction or
+        ;; insert directly as child of parent heading.
         ((and (eq instances-pass :instances)
               recurring-event-id
               (not marker))
-         (let* ((parent-entry-id
-                 (org-gcal--format-entry-id calendar-id recurring-event-id))
-                (parent-marker (org-gcal--id-find parent-entry-id 'markerp)))
-           (when parent-marker
-             ;; Don't insert cancelled instances.
-             (unless (org-gcal--event-cancelled-p event)
-               (atomic-change-group
-                 (org-with-point-at parent-marker
-                   (let ((level (org-current-level)))
-                     (org-end-of-subtree t t)
-                     (unless (bolp) (insert "\n"))
-                     ;; Insert a stub heading with empty properties drawer
-                     ;; BEFORE calling org-gcal--update-entry to avoid
-                     ;; org--align-node-property corrupting the parent.
-                     (insert (make-string (1+ level) ?*) " \n"
-                             ":PROPERTIES:\n:END:\n")
-                     (forward-line -2)
-                     (org-back-to-heading t)
-                     (org-gcal--update-entry calendar-id event 'newly-fetched)
-                     (org-entry-put (point) org-gcal-managed-property
-                                    org-gcal-managed-newly-fetched-mode)))))
-             (when parent-marker (set-marker parent-marker nil)))
-           nil))
+         (if (and org-gcal--instance-collector
+                  (gethash recurring-event-id org-gcal--parent-event-cache))
+             ;; Collect for batch compaction after the loop.
+             (progn
+               (push event
+                     (gethash recurring-event-id
+                              org-gcal--instance-collector))
+               nil)
+           ;; Fallback: no cached parent, insert directly.
+           (let* ((parent-entry-id
+                   (org-gcal--format-entry-id calendar-id recurring-event-id))
+                  (parent-marker (org-gcal--id-find parent-entry-id 'markerp)))
+             (when parent-marker
+               (unless (org-gcal--event-cancelled-p event)
+                 (atomic-change-group
+                   (org-with-point-at parent-marker
+                     (let ((level (org-current-level)))
+                       (org-end-of-subtree t t)
+                       (unless (bolp) (insert "\n"))
+                       (insert (make-string (1+ level) ?*) " \n"
+                               ":PROPERTIES:\n:END:\n")
+                       (forward-line -2)
+                       (org-back-to-heading t)
+                       (org-gcal--update-entry calendar-id event 'newly-fetched)
+                       (org-entry-put (point) org-gcal-managed-property
+                                      org-gcal-managed-newly-fetched-mode)))))
+               (when parent-marker (set-marker parent-marker nil)))
+             nil)))
         ;; --- instances mode: pass 1 (masters) ---
         ;; Skip exception instances (have recurringEventId but no recurrence)
         ;; unless already tracked.
@@ -1007,7 +1038,12 @@ Any parent recurring events are appended in-place to the list PARENT-EVENTS."
                (org-entry-put (point) org-gcal-managed-property
                               org-gcal-managed-newly-fetched-mode))))
          nil)))
-     collect it)))
+     collect it)
+    ;; After processing all events in pass 2, compact collected instances.
+    (when (and (eq instances-pass :instances)
+               org-gcal--instance-collector
+               (> (hash-table-count org-gcal--instance-collector) 0))
+      (org-gcal--compact-instances calendar-id calendar-file))))
 
 (defun org-gcal--sync-update-entries (calendar-id entries skip-export)
   "Update headlines given by 'org-gcal--event-entry' ENTRIES.
@@ -1956,6 +1992,169 @@ BYDAY rule (i.e., it's already handled by `org-gcal--rrule-to-repeater')."
       (mapcar (lambda (d) (cons d (cdr (assoc d org-gcal--day-of-week-alist))))
               days))))
 
+(defun org-gcal--rrule-next-instance (cur-decoded freq interval byday)
+  "Advance CUR-DECODED to the next RRULE instance.
+FREQ is \"DAILY\", \"WEEKLY\", \"MONTHLY\", or \"YEARLY\".
+INTERVAL is the repeat interval.  BYDAY is the BYDAY value
+\(e.g., \"3FR\" for 3rd Friday) or nil."
+  (pcase freq
+    ("DAILY"
+     (decoded-time-add cur-decoded (make-decoded-time :day interval)))
+    ("WEEKLY"
+     (decoded-time-add cur-decoded (make-decoded-time :day (* 7 interval))))
+    ("MONTHLY"
+     (if (and byday (string-match "\\([0-9]+\\)\\([A-Z]\\{2\\}\\)" byday))
+         ;; BYDAY with ordinal: e.g., "3FR" = 3rd Friday.
+         (let* ((nth (string-to-number (match-string 1 byday)))
+                (day-abbr (match-string 2 byday))
+                (dow (cdr (assoc day-abbr org-gcal--day-of-week-alist)))
+                (next-month (decoded-time-add
+                             cur-decoded
+                             (make-decoded-time :month interval)))
+                (year (decoded-time-year next-month))
+                (month (decoded-time-month next-month))
+                (first-of-month (encode-time
+                                 0 (decoded-time-minute cur-decoded)
+                                 (decoded-time-hour cur-decoded)
+                                 1 month year))
+                (first-dow (decoded-time-weekday
+                            (decode-time first-of-month)))
+                (days-to-first (mod (- dow first-dow) 7))
+                (target-day (+ 1 days-to-first (* 7 (1- nth)))))
+           (decode-time (encode-time
+                         0 (decoded-time-minute cur-decoded)
+                         (decoded-time-hour cur-decoded)
+                         target-day month year)))
+       ;; Simple monthly: same day, next month.
+       (decoded-time-add cur-decoded (make-decoded-time :month interval))))
+    ("YEARLY"
+     (decoded-time-add cur-decoded (make-decoded-time :year interval)))
+    (_ (decoded-time-add cur-decoded (make-decoded-time :day 1)))))
+
+(defun org-gcal--instance-modified-p (instance-event parent-event)
+  "Return non-nil if INSTANCE-EVENT differs from the parent RRULE prediction.
+Compares summary, start time (against originalStartTime), and duration.
+PARENT-EVENT is the master event plist from pass 1."
+  (or
+   ;; Summary changed.
+   (not (equal (plist-get instance-event :summary)
+               (plist-get parent-event :summary)))
+   ;; Start time differs from originalStartTime (time was moved).
+   (let ((start (or (plist-get (plist-get instance-event :start) :dateTime)
+                    (plist-get (plist-get instance-event :start) :date)))
+         (orig (or (plist-get (plist-get instance-event :originalStartTime) :dateTime)
+                   (plist-get (plist-get instance-event :originalStartTime) :date))))
+     (and start orig (not (equal start orig))))
+   ;; Duration differs from master.
+   (condition-case nil
+       (let ((i-dur (time-subtract
+                     (org-gcal--parse-calendar-time (plist-get instance-event :end))
+                     (org-gcal--parse-calendar-time (plist-get instance-event :start))))
+             (p-dur (time-subtract
+                     (org-gcal--parse-calendar-time (plist-get parent-event :end))
+                     (org-gcal--parse-calendar-time (plist-get parent-event :start)))))
+         (not (equal i-dur p-dur)))
+     (error nil))))
+
+(defun org-gcal--compact-instances (calendar-id calendar-file)
+  "Process collected instances, inserting only modified ones as children.
+Also prunes existing unmodified child headings and rebuilds parent
+timestamps with exception-aware compaction."
+  (maphash
+   (lambda (recurring-event-id instances)
+     (let* ((parent-event (gethash recurring-event-id
+                                   org-gcal--parent-event-cache))
+            (parent-entry-id (org-gcal--format-entry-id
+                              calendar-id recurring-event-id))
+            (parent-marker (org-gcal--id-find parent-entry-id 'markerp)))
+       (when (and parent-event parent-marker)
+         (let ((modified nil)
+               (cancelled nil)
+               (unmodified-count 0))
+           ;; Classify instances.
+           (dolist (event instances)
+             (cond
+              ((org-gcal--event-cancelled-p event)
+               (push event cancelled))
+              ((org-gcal--instance-modified-p event parent-event)
+               (push event modified))
+              (t (cl-incf unmodified-count))))
+           (message "org-gcal compact %s: %d modified, %d cancelled, %d unmodified"
+                      recurring-event-id
+                      (length modified) (length cancelled) unmodified-count))
+           ;; Insert child headings only for modified instances that
+           ;; don't already have a heading.
+           (dolist (event modified)
+             (let* ((entry-id (org-gcal--format-entry-id
+                               calendar-id (plist-get event :id)))
+                    (existing (org-gcal--id-find entry-id 'markerp)))
+               (unless existing
+                 (atomic-change-group
+                   (org-with-point-at parent-marker
+                     (let ((level (org-current-level)))
+                       (org-end-of-subtree t t)
+                       (unless (bolp) (insert "\n"))
+                       (insert (make-string (1+ level) ?*) " \n"
+                               ":PROPERTIES:\n:END:\n")
+                       (forward-line -2)
+                       (org-back-to-heading t)
+                       (org-gcal--update-entry calendar-id event
+                                               'newly-fetched)
+                       (org-entry-put (point) org-gcal-managed-property
+                                      org-gcal-managed-newly-fetched-mode))))
+               (when existing (set-marker existing nil))))
+           ;; Prune existing child headings for unmodified instances.
+           (org-gcal--prune-unmodified-children
+            parent-marker parent-event calendar-id instances))
+         (when parent-marker (set-marker parent-marker nil)))))
+   org-gcal--instance-collector))
+
+(defun org-gcal--prune-unmodified-children (parent-marker parent-event
+                                                          calendar-id instances)
+  "Delete child headings under PARENT-MARKER for unmodified instances.
+Only deletes headings with `org-gcal-managed' property whose events
+are in INSTANCES and are not modified relative to PARENT-EVENT."
+  (let ((instance-ids (make-hash-table :test 'equal)))
+    ;; Build lookup of all instance event IDs in this batch.
+    (dolist (event instances)
+      (puthash (plist-get event :id) event instance-ids))
+    ;; Walk children in reverse order (to preserve positions).
+    (org-with-point-at parent-marker
+      (let* ((parent-level (org-current-level))
+             (subtree-end (save-excursion (org-end-of-subtree t) (point)))
+             (children nil))
+        ;; Collect child positions.
+        (save-excursion
+          (while (and (outline-next-heading) (<= (point) subtree-end))
+            (when (= (org-outline-level) (1+ parent-level))
+              (push (point-marker) children))))
+        ;; Process children (already in reverse order from push).
+        (dolist (child-marker children)
+          (org-with-point-at child-marker
+            (when (org-entry-get nil org-gcal-managed-property)
+              (let* ((child-entry-id (org-entry-get nil org-gcal-entry-id-property))
+                     ;; Extract event ID from entry-id (format: "eventId/calendarId").
+                     (child-event-id
+                      (when child-entry-id
+                        (car (split-string child-entry-id "/"))))
+                     (child-event (when child-event-id
+                                    (gethash child-event-id instance-ids))))
+                (when (and child-event
+                           (not (org-gcal--instance-modified-p
+                                 child-event parent-event))
+                           ;; Don't prune if child has user-added subheadings.
+                           (let ((child-end (save-excursion
+                                              (org-end-of-subtree t) (point))))
+                             (save-excursion
+                               (not (and (outline-next-heading)
+                                         (< (point) child-end)
+                                         (> (org-outline-level)
+                                            (1+ parent-level)))))))
+                  (delete-region (org-entry-beginning-position)
+                                 (save-excursion
+                                   (org-end-of-subtree t t) (point)))))))
+          (set-marker child-marker nil))))))
+
 (defun org-gcal--shift-iso-date (iso-str day-offset start-dow)
   "Shift ISO-STR forward so it falls on DAY-OFFSET (0=Sun..6=Sat).
 START-DOW is the day-of-week of ISO-STR.  Returns a new ISO date string."
@@ -2232,45 +2431,62 @@ SCHEDULED.  Used for master recurring events in `instances' mode."
     (newline)
     (insert (format ":%s:" org-gcal-drawer-name))
     (newline)
-    (let*
-        ((open (if inactive "[" "<"))
-         (close (if inactive "]" ">"))
-         (timestamp
-          (if (or (string= start end) (org-gcal--alldayp start end))
-              (org-gcal--format-iso2org start nil repeater inactive)
-            (if (and
-                 (= (plist-get (org-gcal--parse-date start) :year)
-                    (plist-get (org-gcal--parse-date end)   :year))
-                 (= (plist-get (org-gcal--parse-date start) :mon)
-                    (plist-get (org-gcal--parse-date end)   :mon))
-                 (= (plist-get (org-gcal--parse-date start) :day)
-                    (plist-get (org-gcal--parse-date end)   :day)))
-                (format "%s%s-%s%s%s"
-                        open
-                        (org-gcal--format-date start "%Y-%m-%d %a %H:%M")
-                        (org-gcal--format-date end "%H:%M")
-                        (if repeater (concat " " repeater) "")
-                        close)
-              (format "%s--%s"
-                      (org-gcal--format-iso2org start nil repeater inactive)
-                      (org-gcal--format-iso2org
-                       (if (< 11 (length end))
-                           end
-                         (org-gcal--iso-previous-day end))
-                       nil nil inactive))))))
+    ;; For multi-BYDAY weekly rules on inactive masters, emit one
+    ;; timestamp per day (each with +1w).  Otherwise single timestamp.
+    (let* ((expand-days
+            (when (and inactive recurrence)
+              (org-gcal--rrule-expand-days recurrence)))
+           (open (if inactive "[" "<"))
+           (close (if inactive "]" ">"))
+           (make-ts
+            (lambda (s e rep)
+              (if (or (string= s e) (org-gcal--alldayp s e))
+                  (org-gcal--format-iso2org s nil rep inactive)
+                (if (and
+                     (= (plist-get (org-gcal--parse-date s) :year)
+                        (plist-get (org-gcal--parse-date e) :year))
+                     (= (plist-get (org-gcal--parse-date s) :mon)
+                        (plist-get (org-gcal--parse-date e) :mon))
+                     (= (plist-get (org-gcal--parse-date s) :day)
+                        (plist-get (org-gcal--parse-date e) :day)))
+                    (format "%s%s-%s%s%s"
+                            open
+                            (org-gcal--format-date s "%Y-%m-%d %a %H:%M")
+                            (org-gcal--format-date e "%H:%M")
+                            (if rep (concat " " rep) "")
+                            close)
+                  (format "%s--%s"
+                          (org-gcal--format-iso2org s nil rep inactive)
+                          (org-gcal--format-iso2org
+                           (if (< 11 (length e)) e
+                             (org-gcal--iso-previous-day e))
+                           nil nil inactive))))))
+           (timestamps
+            (if expand-days
+                ;; Multi-BYDAY: one timestamp per day, each +1w.
+                (let ((start-dow (plist-get (org-gcal--parse-date start) :dow)))
+                  (mapcar
+                   (lambda (day-pair)
+                     (let ((shifted-s (org-gcal--shift-iso-date
+                                       start (cdr day-pair) start-dow))
+                           (shifted-e (org-gcal--shift-iso-date
+                                       end (cdr day-pair) start-dow)))
+                       (funcall make-ts shifted-s shifted-e "+1w")))
+                   expand-days))
+              ;; Single timestamp.
+              (list (funcall make-ts start end repeater)))))
       (if (and (not inactive) (org-element-property :scheduled elem))
-          ;; Ensure CLOSED timestamp isn't wiped out by 'org-gcal-sync' (see
-          ;; https://github.com/kidd/org-gcal.el/issues/218).
           (let ((org-closed-keep-when-no-todo t))
-            (org-schedule nil timestamp))
+            (org-schedule nil (car timestamps)))
         ;; When switching to inactive, remove any existing SCHEDULED.
         (when (and inactive (org-element-property :scheduled elem))
           (save-excursion
             (org-back-to-heading t)
             (let ((org-closed-keep-when-no-todo t))
               (org-schedule '(4)))))
-        (insert timestamp)
-        (newline)
+        (dolist (ts timestamps)
+          (insert ts)
+          (newline))
         (when desc (newline))))
     ;; Insert event description.
     (if (eq org-gcal-description-mode 'body)
