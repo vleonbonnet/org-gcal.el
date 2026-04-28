@@ -1476,9 +1476,12 @@ drawers and planning lines, up to the next heading or end of subtree."
           (unless tobj
             (org-gcal--back-to-heading)
             (org-end-of-meta-data t)
-            (when (re-search-forward
-                   "[<\\[][0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]"
-                   limit 'noerror)
+            ;; org-end-of-meta-data can move point at or past the next
+            ;; heading on empty entries, so re-bound the search.
+            (when (and (< (point) limit)
+                       (re-search-forward
+                        "[<\\[][0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]"
+                        limit 'noerror))
               (goto-char (match-beginning 0))
               (setq tobj (org-element-timestamp-parser))))))
       ;; Read description.
