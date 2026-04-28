@@ -1670,7 +1670,11 @@ For valid values of EXISTING-MODE see
              (start (plist-get time-desc :start))
              (end (plist-get time-desc :end))
              (desc (plist-get time-desc :desc)))
-        (unless end
+        ;; Only prompt for a missing end time when actually pushing to the
+        ;; server.  In sync (skip-export) paths the server data is the source
+        ;; of truth and `org-gcal--post-event' falls back to a GET, so the
+        ;; prompt would block deferred chains in non-interactive contexts.
+        (unless (or end skip-export)
           (let* ((start-time (or start (org-read-date 'with-time 'to-time)))
                  (resolution 5)
                  (duration-default
