@@ -1059,10 +1059,17 @@ have been moved from the default fetch file.  CALENDAR-ID is defined in
    (deferred:loop entries
                   (lambda (entry)
                     (deferred:$
-                     (let ((marker (or (org-gcal--event-entry-marker entry)
-                                       (org-gcal--id-find (org-gcal--event-entry-entry-id entry))))
-                           (event (org-gcal--event-entry-event entry))
-                           (inactive-p (org-gcal--event-entry-inactive entry)))
+                     (let* ((stored-marker (org-gcal--event-entry-marker entry))
+                            ;; A marker whose buffer was killed (by revert,
+                            ;; kill-buffer, or `set-marker ... nil') is still
+                            ;; truthy but unusable, so re-find by entry-id.
+                            (marker (if (and stored-marker
+                                              (marker-buffer stored-marker))
+                                         stored-marker
+                                       (org-gcal--id-find
+                                        (org-gcal--event-entry-entry-id entry))))
+                            (event (org-gcal--event-entry-event entry))
+                            (inactive-p (org-gcal--event-entry-inactive entry)))
                        (when (and (markerp marker)
                                   (not (marker-buffer marker)))
                          (error "org-gcal: marker's buffer for entry %s has been killed"
