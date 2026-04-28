@@ -900,6 +900,7 @@ Any parent recurring events are appended in-place to the list PARENT-EVENTS."
     ;; but skip in instances mode (instances naturally group under one parent).
     (unless (eq instances-pass :masters)
       (setq events (org-gcal--expand-multi-day-events events calendar-id)))
+    (prog1
     (cl-loop
      for event across events
      if
@@ -1046,7 +1047,7 @@ Any parent recurring events are appended in-place to the list PARENT-EVENTS."
     (when (and (eq instances-pass :instances)
                org-gcal--instance-collector
                (> (hash-table-count org-gcal--instance-collector) 0))
-      (org-gcal--compact-instances calendar-id calendar-file))))
+      (org-gcal--compact-instances calendar-id calendar-file)))))
 
 (defun org-gcal--sync-update-entries (calendar-id entries skip-export)
   "Update headlines given by 'org-gcal--event-entry' ENTRIES.
