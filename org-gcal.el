@@ -1498,11 +1498,15 @@ drawers and planning lines, up to the next heading or end of subtree."
           (save-excursion
             (org-gcal--back-to-heading)
             (org-end-of-meta-data t)
-            ;; Skip past bare timestamp lines.
-            (while (looking-at "^[<\\[].*[>\\]]\\s-*$")
+            ;; Skip past bare timestamp lines and the blank lines that
+            ;; follow them.  Guard with `eobp' because at the end of the
+            ;; buffer `forward-line' no longer advances and the regex still
+            ;; matches, which would loop forever.
+            (while (and (not (eobp))
+                        (looking-at "^[<\\[].*[>\\]]\\s-*$"))
               (forward-line))
-            ;; Skip blank lines between timestamps and description.
-            (while (looking-at "^\\s-*$")
+            (while (and (not (eobp))
+                        (looking-at "^\\s-*$"))
               (forward-line))
             (let* ((body-start (point))
                    (body-end (save-excursion
