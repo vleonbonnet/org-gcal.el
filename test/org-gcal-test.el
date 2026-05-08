@@ -105,6 +105,22 @@ always located at the beginning of the buffer."
      (goto-char (point-min))
      ,@body))
 
+(defun org-gcal-test--stale-marker (contents)
+  "Return a marker whose buffer was killed after inserting CONTENTS."
+  (let ((buffer (generate-new-buffer " *org-gcal-stale-marker*")))
+    (with-current-buffer buffer
+      (org-mode)
+      (insert contents)
+      (goto-char (point-min))
+      (prog1 (point-marker)
+        (kill-buffer buffer)))))
+
+(defmacro org-gcal-test--should-error-match (regexp &rest body)
+  "Assert that BODY signals an error whose message matches REGEXP."
+  (declare (indent 1) (debug t))
+  `(let ((err (should-error (progn ,@body) :type 'error)))
+     (should (string-match-p ,regexp (error-message-string err)))))
+
 (defun org-gcal-test--json-read-string (json)
   "Wrap ‘org-gcal--json-read’ to parse a JSON string."
   (with-temp-buffer
@@ -614,6 +630,41 @@ Second paragraph
     (let ((org-gcal-managed-post-at-point-update-existing 'always-push))
       (org-gcal-post-at-point)))))
 
+(ert-deftest org-gcal-test--sync-update-entries-stale-marker ()
+  "Verify sync reports a clear error for entries with stale markers."
+  (let ((errors nil))
+    (cl-letf (((symbol-function 'deferred:loop)
+               (lambda (entries body)
+                 (funcall body (car entries))))
+              ((symbol-function 'error)
+               (lambda (format-string &rest args)
+                 (let ((message (apply #'format format-string args)))
+                   (push message errors)
+                   (signal 'error (list message))))))
+      (ignore-errors
+        (deferred:sync!
+         (org-gcal--sync-update-entries
+          org-gcal-test-calendar-id
+          (list
+           (org-gcal--event-entry-create
+            :entry-id "foobar1234/foo@foobar.com"
+            :marker (org-gcal-test--stale-marker "* My event summary\n")
+            :event org-gcal-test-event))
+          t)))
+      (should
+       (cl-some
+        (lambda (error)
+          (string-match-p "marker.*buffer.*foobar1234/foo@foobar.com.*killed"
+                          error))
+        errors)))))
+
+(ert-deftest org-gcal-test--with-point-at-no-widen-stale-marker ()
+  "Verify stale markers report the killed buffer before moving point."
+  (org-gcal-test--should-error-match "marker.*buffer has been killed"
+    (org-gcal--with-point-at-no-widen
+        (org-gcal-test--stale-marker "* My event summary\n")
+      (point))))
+
 (ert-deftest org-gcal-test--post-at-point-api-response ()
   "Verify that ‘org-gcal-post-to-point’ updates an event using the data
 returned from the Google Calendar API."
@@ -687,6 +738,27 @@ My event description
 
 Second paragraph
 "))))))))
+
+(ert-deftest org-gcal-test--post-event-stale-marker ()
+  "Verify that post-event callbacks report stale markers clearly."
+  (let ((marker (org-gcal-test--stale-marker "* My event summary\n")))
+    (cl-letf (((symbol-function 'org-gcal--get-access-token)
+               (lambda (_calendar-id) "my_access_token"))
+              ((symbol-function 'request-deferred)
+               (lambda (&rest _args)
+                 (deferred:succeed
+                  (make-request-response
+                   :status-code 200
+                   :data org-gcal-test-event)))))
+      (org-gcal-test--should-error-match "marker.*buffer has been killed"
+        (deferred:sync!
+         (org-gcal--post-event
+          "2019-10-06T17:00:00Z" "2019-10-06T21:00:00Z"
+          "My event summary" "Foobar's desk"
+          '((url . "https://google.com") (title . "Google"))
+          "My event description"
+          org-gcal-test-calendar-id
+          marker "opaque" "\"12344321\"" "foobar1234"))))))
 
 (ert-deftest org-gcal-test--post-at-point-managed-update-existing-gcal ()
   "Verify ‘org-gcal-post-at-point’ with ‘org-gcal-managed-update-existing-mode’
@@ -1227,6 +1299,64 @@ Second paragraph
                 :status-code 200)))
         (deferred:sync! (org-gcal-delete-at-point))
         (should (equal (buffer-string) "")))))))
+
+(ert-deftest org-gcal-test--delete-event-stale-marker-on-etag-conflict ()
+  "Verify delete-event reports stale markers clearly after HTTP 412."
+  (let ((marker (org-gcal-test--stale-marker "* My event summary\n")))
+    (cl-letf (((symbol-function 'org-gcal--get-access-token)
+               (lambda (_calendar-id) "my_access_token"))
+              ((symbol-function 'org-gcal--notify) #'ignore)
+              ((symbol-function 'request-deferred)
+               (lambda (&rest _args)
+                 (deferred:succeed
+                  (make-request-response
+                   :status-code 412))))
+              ((symbol-function 'org-gcal--get-event)
+               (lambda (_calendar-id _event-id)
+                 (deferred:succeed
+                  (make-request-response
+                   :status-code 200
+                   :data org-gcal-test-event)))))
+      (org-gcal-test--should-error-match "marker.*buffer has been killed"
+        (deferred:sync!
+         (org-gcal--delete-event org-gcal-test-calendar-id
+                                 "foobar1234"
+                                 "\"12344321\""
+                                 marker))))))
+
+(ert-deftest org-gcal-test--delete-at-point-stale-marker-in-finally ()
+  "Verify delete-at-point reports clearly if its source buffer is killed."
+  (org-gcal-test--with-temp-buffer
+   "\
+* My event summary
+:PROPERTIES:
+:ETag:     \"12344321\"
+:calendar-id: foo@foobar.com
+:entry-id:       foobar1234/foo@foobar.com
+:END:
+:org-gcal:
+My event description
+:END:
+"
+   (cl-letf (((symbol-function 'org-gcal--get-access-token)
+              (lambda (_calendar-id) "my_access_token"))
+             ((symbol-function 'y-or-n-p)
+              (lambda (&rest _args) t))
+             ((symbol-function 'org-gcal--delete-event)
+              (lambda (_calendar-id _event-id _etag marker &optional _a-token)
+                (kill-buffer (marker-buffer marker))
+                (deferred:succeed nil)))
+             ((symbol-function 'error)
+              (lambda (format-string &rest args)
+                (let ((message (apply #'format format-string args)))
+                  (when (string-match-p "marker.*buffer has been killed" message)
+                    (throw 'stale-marker-error message))
+                  (signal 'error (list message))))))
+     (should
+      (string-match-p "marker.*buffer has been killed"
+                      (catch 'stale-marker-error
+                        (deferred:sync! (org-gcal-delete-at-point))
+                        nil))))))
 
 
 (ert-deftest org-gcal-test--save-with-full-day-event ()
