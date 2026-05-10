@@ -768,6 +768,10 @@ have been moved from the default fetch file.  CALENDAR-ID is defined in
                      (let ((marker (or (org-gcal--event-entry-marker entry)
                                        (org-gcal--id-find (org-gcal--event-entry-entry-id entry))))
                            (event (org-gcal--event-entry-event entry)))
+                       (when (and (markerp marker)
+                                  (not (marker-buffer marker)))
+                         (error "org-gcal: marker's buffer for entry %s has been killed"
+                                (org-gcal--event-entry-entry-id entry)))
                        (org-with-point-at marker
                          ;; If skipping exports, just overwrite current entry's
                          ;; calendar data with what's been retrieved from the
@@ -844,12 +848,16 @@ to “org”."
 (defmacro org-gcal--with-point-at-no-widen (pom &rest body)
   "Move to buffer and point of point-or-marker POM for the duration of BODY.
 
-Based on ‘org-with-point-at’ but doesn’t widen the buffer."
+Based on ‘org-with-point-at’ but doesn’t widen the buffer.
+Signals an error if POM is a marker whose buffer has been killed."
   (declare (debug (form body)) (indent 1))
   (org-with-gensyms (mpom)
     `(let ((,mpom ,pom))
        (save-excursion
-         (when (markerp ,mpom) (set-buffer (marker-buffer ,mpom)))
+         (when (markerp ,mpom)
+           (unless (marker-buffer ,mpom)
+             (error "org-gcal: marker’s buffer has been killed"))
+           (set-buffer (marker-buffer ,mpom)))
          (goto-char (or ,mpom (point)))
          ,@body))))
 
@@ -1379,6 +1387,8 @@ delete calendar info from events on calendars you no longer have access to."
              (message "clear-gcal-info delete-error: %S %S"
                       clear-gcal-info delete-error)
              (when (or clear-gcal-info (null delete-error))
+               (unless (marker-buffer marker)
+                 (error "org-gcal: marker’s buffer has been killed"))
                ;; Delete :org-gcal: drawer after deleting event. This will preserve
                ;; the ID for links, but will ensure functions in this module don’t
                ;; identify the entry as a Calendar event.
@@ -2030,6 +2040,8 @@ Returns a ‘deferred’ object that can be used to wait for completion."
                                (org-gcal--get-event calendar-id event-id)
                                (deferred:nextc it
                                                (lambda (response)
+                                                 (unless (marker-buffer marker)
+                                                   (error "org-gcal: marker's buffer has been killed"))
                                                  (save-excursion
                                                    (with-current-buffer (marker-buffer marker)
                                                      (goto-char (marker-position marker))
@@ -2049,6 +2061,8 @@ Returns a ‘deferred’ object that can be used to wait for completion."
                            (t
                             (unless skip-export
                               (let* ((data (request-response-data response)))
+                                (unless (marker-buffer marker)
+                                  (error "org-gcal: marker's buffer has been killed"))
                                 (save-excursion
                                   (with-current-buffer (marker-buffer marker)
                                     (goto-char (marker-position marker))
@@ -2134,6 +2148,8 @@ Returns a ‘deferred’ object that can be used to wait for completion."
                              (org-gcal--get-event calendar-id event-id)
                              (deferred:nextc it
                                              (lambda (response)
+                                               (unless (marker-buffer marker)
+                                                 (error "org-gcal: marker's buffer has been killed"))
                                                (save-excursion
                                                  (with-current-buffer (marker-buffer marker)
                                                    (goto-char (marker-position marker))
