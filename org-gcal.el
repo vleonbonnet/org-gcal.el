@@ -1059,34 +1059,45 @@ have been moved from the default fetch file.  CALENDAR-ID is defined in
    (deferred:loop entries
                   (lambda (entry)
                     (deferred:$
-                     (let* ((stored-marker (org-gcal--event-entry-marker entry))
+                     (let* ((entry-id (org-gcal--event-entry-entry-id entry))
+                            (stored-marker (org-gcal--event-entry-marker entry))
                             ;; A marker whose buffer was killed (by revert,
                             ;; kill-buffer, or `set-marker ... nil') is still
                             ;; truthy but unusable, so re-find by entry-id.
                             (marker (if (and stored-marker
                                               (marker-buffer stored-marker))
                                          stored-marker
-                                       (org-gcal--id-find
-                                        (org-gcal--event-entry-entry-id entry))))
+                                       (org-gcal--id-find entry-id)))
                             (event (org-gcal--event-entry-event entry))
                             (inactive-p (org-gcal--event-entry-inactive entry)))
-                       (when (and (markerp marker)
-                                  (not (marker-buffer marker)))
+                       (cond
+                        ;; `org-gcal--id-find' returns nil when the entry was
+                        ;; renamed/deleted between syncs.  Skip rather than
+                        ;; falling through to `org-with-point-at nil', which
+                        ;; would land at current point and crash `--update-entry'
+                        ;; with "Must be on Org-mode heading.".
+                        ((null marker)
+                         (message "org-gcal: skipping entry %s — not found in any file"
+                                  entry-id)
+                         (deferred:succeed nil))
+                        ((and (markerp marker)
+                              (not (marker-buffer marker)))
                          (error "org-gcal: marker's buffer for entry %s has been killed"
-                                (org-gcal--event-entry-entry-id entry)))
-                       (org-with-point-at marker
-                         ;; If skipping exports, just overwrite current entry's
-                         ;; calendar data with what's been retrieved from the
-                         ;; server. Otherwise, sync the entry at the current
-                         ;; point.
-                         (set-marker marker nil)
-                         (if (and skip-export event)
-                             (progn
-                               (org-gcal--update-entry calendar-id event
-                                                       'update-existing inactive-p)
-                               (deferred:succeed nil))
-                           (org-gcal-post-at-point nil skip-export
-                                                   (org-gcal--sync-get-update-existing)))))
+                                entry-id))
+                        (t
+                         (org-with-point-at marker
+                           ;; If skipping exports, just overwrite current entry's
+                           ;; calendar data with what's been retrieved from the
+                           ;; server. Otherwise, sync the entry at the current
+                           ;; point.
+                           (set-marker marker nil)
+                           (if (and skip-export event)
+                               (progn
+                                 (org-gcal--update-entry calendar-id event
+                                                         'update-existing inactive-p)
+                                 (deferred:succeed nil))
+                             (org-gcal-post-at-point nil skip-export
+                                                     (org-gcal--sync-get-update-existing)))))))
                      ;; Log but otherwise ignore errors.
                      (deferred:error it
                                      (lambda (err)
