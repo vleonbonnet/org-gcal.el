@@ -653,15 +653,23 @@ INSTANCES-PASS is nil for legacy, :masters for pass 1, :instances for pass 2."
      (deferred:nextc it
                      (lambda (entries)
                        (org-gcal--sync-update-entries calendar-id entries skip-export)))
-     ;; Retrieve the next page of results if needed.
+     ;; Retrieve the next page of results if needed, otherwise (in pass 2)
+     ;; run compaction once over the fully-populated instance collector.
      (deferred:nextc it
                      (lambda (_)
                        (let ((pt (car (last page-token-cons))))
-                         (if pt
-                             (org-gcal--sync-calendar-events
-                              calendar-id-file skip-export silent pt
-                              up-time down-time parent-events instances-pass)
-                           (deferred:succeed nil))))))))
+                         (cond
+                          (pt
+                           (org-gcal--sync-calendar-events
+                            calendar-id-file skip-export silent pt
+                            up-time down-time parent-events instances-pass))
+                          ((and (eq instances-pass :instances)
+                                org-gcal--instance-collector
+                                (> (hash-table-count
+                                    org-gcal--instance-collector) 0))
+                           (org-gcal--compact-instances calendar-id calendar-file)
+                           (deferred:succeed nil))
+                          (t (deferred:succeed nil)))))))))
 
 (defun org-gcal--sync-instances
     (calendar-id-file parent-event-id skip-export silent page-token
@@ -1042,12 +1050,7 @@ Any parent recurring events are appended in-place to the list PARENT-EVENTS."
                (org-entry-put (point) org-gcal-managed-property
                               org-gcal-managed-newly-fetched-mode))))
          nil)))
-     collect it)
-    ;; After processing all events in pass 2, compact collected instances.
-    (when (and (eq instances-pass :instances)
-               org-gcal--instance-collector
-               (> (hash-table-count org-gcal--instance-collector) 0))
-      (org-gcal--compact-instances calendar-id calendar-file)))))
+     collect it))))
 
 (defun org-gcal--sync-update-entries (calendar-id entries skip-export)
   "Update headlines given by 'org-gcal--event-entry' ENTRIES.
@@ -1946,7 +1949,21 @@ Return an Emacs time object from 'encode-time'."
    (or (plist-get time :dateTime)
        (plist-get time :date))))
 
+(defvar org-gcal--time-string-cache nil
+  "Dynamically-bound hash table memoizing `parse-iso8601-time-string'.
+When non-nil, `org-gcal--parse-calendar-time-string' uses it as a
+per-call cache.  Bind around hot loops (e.g. instance compaction)
+that re-parse the same RFC 3339 strings many times.")
+
 (defun org-gcal--parse-calendar-time-string (time-string)
+  (if org-gcal--time-string-cache
+      (or (gethash time-string org-gcal--time-string-cache)
+          (puthash time-string
+                   (org-gcal--parse-calendar-time-string-1 time-string)
+                   org-gcal--time-string-cache))
+    (org-gcal--parse-calendar-time-string-1 time-string)))
+
+(defun org-gcal--parse-calendar-time-string-1 (time-string)
   (condition-case nil
       (if (< 11 (length time-string))
           (parse-iso8601-time-string time-string)
@@ -2254,7 +2271,8 @@ In drawer mode, replaces timestamps inside the :org-gcal: drawer."
   "Process collected instances, inserting only modified ones as children.
 Also prunes existing unmodified child headings and rebuilds parent
 timestamps with exception-aware compaction."
-  (maphash
+  (let ((org-gcal--time-string-cache (make-hash-table :test 'equal)))
+    (maphash
    (lambda (recurring-event-id instances)
      (let* ((parent-event (gethash recurring-event-id
                                    org-gcal--parent-event-cache))
@@ -2307,7 +2325,7 @@ timestamps with exception-aware compaction."
            (org-gcal--prune-unmodified-children
             parent-marker parent-event calendar-id instances)))
          (when parent-marker (set-marker parent-marker nil)))))
-   org-gcal--instance-collector))
+     org-gcal--instance-collector)))
 
 (defun org-gcal--prune-unmodified-children (parent-marker parent-event
                                                           calendar-id instances)
