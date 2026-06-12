@@ -1589,6 +1589,26 @@ Second paragraph
         ;; Entity NOT decoded
         (should (string-match-p "&amp;" contents))))))
 
+(ert-deftest org-gcal-test--update-entry-preserve-html-per-calendar ()
+  "Verify per-calendar override preserves HTML in `org-gcal--update-entry'."
+  ;; Global default is t, but this specific calendar has stripping disabled.
+  (let ((org-gcal-strip-html-descriptions t)
+        (org-gcal-strip-html-descriptions-overrides
+         `((,org-gcal-test-calendar-id . nil))))
+    (org-gcal-test--with-temp-buffer
+        "* "
+      (org-gcal--update-entry org-gcal-test-calendar-id
+                              org-gcal-test-html-event)
+      (org-back-to-heading)
+      (re-search-forward ":org-gcal:")
+      (let* ((elem (org-element-at-point))
+             (contents (buffer-substring-no-properties
+                        (org-element-property :contents-begin elem)
+                        (org-element-property :contents-end elem))))
+        (should (string-match-p "<html-blob>" contents))
+        (should (string-match-p "</a>" contents))
+        (should (string-match-p "&amp;" contents))))))
+
 (ert-deftest org-gcal-test--update-entry-strip-html-per-calendar ()
   "Verify per-calendar override for HTML stripping in `org-gcal--update-entry'."
   ;; Global default is nil, but this specific calendar has stripping enabled.
