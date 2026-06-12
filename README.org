@@ -364,6 +364,29 @@ delete the corresponding Org mode headlines:
 
 Modify =org-gcal-notify-p= from =t= to =nil=
 
+** Strip HTML from event descriptions
+
+Google Calendar returns event descriptions as HTML. By default, org-gcal
+preserves that HTML so event descriptions can be edited locally without losing
+formatting.
+
+If you prefer plain text descriptions in Org, set
+=org-gcal-strip-html-descriptions= to =t=:
+
+#+BEGIN_SRC emacs-lisp
+  (setq org-gcal-strip-html-descriptions t)
+#+END_SRC
+
+You can override this global default for individual calendars with
+=org-gcal-strip-html-descriptions-overrides=. This is useful when you want to
+strip HTML for most calendars but preserve it for shared calendars:
+
+#+BEGIN_SRC emacs-lisp
+  (setq org-gcal-strip-html-descriptions t
+        org-gcal-strip-html-descriptions-overrides
+        '(("shared-calendar@group.calendar.google.com" . nil)))
+#+END_SRC
+
 ** Collect instances of recurring events under parent event
 
 By default, =org-gcal-recurring-events-mode= is set to ='top-level=, which means
