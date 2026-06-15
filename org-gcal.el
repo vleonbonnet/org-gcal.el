@@ -557,6 +557,14 @@ SKIP-EXPORT.  Set SILENT to non-nil to inhibit notifications."
                                           (cl-incf cal-count)
                                           (message "org-gcal: syncing %d calendars... [%d/%d]"
                                                    cal-total cal-count cal-total)
+                                          nil))
+                        ;; Isolate calendars from each other: a failure syncing
+                        ;; one calendar must not abort the loop over the rest.
+                        (deferred:error it
+                                        (lambda (err)
+                                          (cl-incf cal-count)
+                                          (message "org-gcal: calendar %s failed: %S — continuing [%d/%d]"
+                                                   (car calendar-id-file) err cal-count cal-total)
                                           nil)))))
       ;; After syncing new events to Org, sync existing events in Org.
       (deferred:nextc it
@@ -2283,68 +2291,72 @@ Also prunes existing unmodified child headings and rebuilds parent
 timestamps with exception-aware compaction."
   (let ((org-gcal--time-string-cache (make-hash-table :test 'equal)))
     (maphash
-   (lambda (recurring-event-id instances)
-     (let* ((parent-event (gethash recurring-event-id
-                                   org-gcal--parent-event-cache))
-            (parent-entry-id (org-gcal--format-entry-id
-                              calendar-id recurring-event-id))
-            (parent-marker (org-gcal--id-find parent-entry-id 'markerp)))
-       (when (and parent-event parent-marker
-                  ;; A stale id-location cache (or a buffer reverted by a
-                  ;; concurrent sync) can resolve PARENT-MARKER to a non-heading
-                  ;; position.  `org-current-level' would then return nil and the
-                  ;; `(1+ level)' computations below would signal
-                  ;; `number-or-marker-p' on nil, escaping uncaught and aborting
-                  ;; the rest of the multi-calendar sync.  Skip such an entry.
-                  (or (org-with-point-at parent-marker (org-at-heading-p))
-                      (ignore
-                       (message "org-gcal: skipping compaction for %s — parent marker not on a heading (stale id-location cache?)"
-                                recurring-event-id))))
-         (let ((modified nil)
-               (cancelled nil)
-               (unmodified-count 0))
-           ;; Classify instances.
-           (dolist (event instances)
-             (cond
-              ((org-gcal--event-cancelled-p event)
-               (push event cancelled))
-              ((org-gcal--instance-modified-p event parent-event)
-               (push event modified))
-              (t (cl-incf unmodified-count))))
-           (message "org-gcal compact %s: %d modified, %d cancelled, %d unmodified"
-                    recurring-event-id
-                    (length modified) (length cancelled) unmodified-count)
-           ;; Rebuild parent timestamps with exception-aware compaction.
-           (when (or modified cancelled)
-             (let ((new-ts (org-gcal--build-exception-aware-timestamps
-                            parent-event modified cancelled)))
-               (when new-ts
-                 (org-gcal--update-parent-timestamps parent-marker new-ts))))
-           ;; Insert child headings only for modified instances that
-           ;; don't already have a heading.
-           (dolist (event modified)
-             (let* ((entry-id (org-gcal--format-entry-id
-                               calendar-id (plist-get event :id)))
-                    (existing (org-gcal--id-find entry-id 'markerp)))
-               (unless existing
-                 (atomic-change-group
-                   (org-with-point-at parent-marker
-                     (let ((level (org-current-level)))
-                       (org-end-of-subtree t t)
-                       (unless (bolp) (insert "\n"))
-                       (insert (make-string (1+ level) ?*) " \n"
-                               ":PROPERTIES:\n:END:\n")
-                       (forward-line -2)
-                       (org-back-to-heading t)
-                       (org-gcal--update-entry calendar-id event
-                                               'newly-fetched)
-                       (org-entry-put (point) org-gcal-managed-property
-                                      org-gcal-managed-newly-fetched-mode))))
-               (when existing (set-marker existing nil))))
-           ;; Prune existing child headings for unmodified instances.
-           (org-gcal--prune-unmodified-children
-            parent-marker parent-event calendar-id instances)))
-         (when parent-marker (set-marker parent-marker nil)))))
+     (lambda (recurring-event-id instances)
+       (condition-case err
+           (let* ((parent-event (gethash recurring-event-id
+                                         org-gcal--parent-event-cache))
+                  (parent-entry-id (org-gcal--format-entry-id
+                                    calendar-id recurring-event-id))
+                  (parent-marker (org-gcal--id-find parent-entry-id 'markerp)))
+             (when (and parent-event parent-marker
+                        ;; A stale id-location cache (or a buffer reverted by a
+                        ;; concurrent sync) can resolve PARENT-MARKER to a non-heading
+                        ;; position.  `org-current-level' would then return nil and the
+                        ;; `(1+ level)' computations below would signal
+                        ;; `number-or-marker-p' on nil, escaping uncaught and aborting
+                        ;; the rest of the multi-calendar sync.  Skip such an entry.
+                        (or (org-with-point-at parent-marker (org-at-heading-p))
+                            (ignore
+                             (message "org-gcal: skipping compaction for %s — parent marker not on a heading (stale id-location cache?)"
+                                      recurring-event-id))))
+               (let ((modified nil)
+                     (cancelled nil)
+                     (unmodified-count 0))
+                 ;; Classify instances.
+                 (dolist (event instances)
+                   (cond
+                    ((org-gcal--event-cancelled-p event)
+                     (push event cancelled))
+                    ((org-gcal--instance-modified-p event parent-event)
+                     (push event modified))
+                    (t (cl-incf unmodified-count))))
+                 (message "org-gcal compact %s: %d modified, %d cancelled, %d unmodified"
+                          recurring-event-id
+                          (length modified) (length cancelled) unmodified-count)
+                 ;; Rebuild parent timestamps with exception-aware compaction.
+                 (when (or modified cancelled)
+                   (let ((new-ts (org-gcal--build-exception-aware-timestamps
+                                  parent-event modified cancelled)))
+                     (when new-ts
+                       (org-gcal--update-parent-timestamps parent-marker new-ts))))
+                 ;; Insert child headings only for modified instances that
+                 ;; don't already have a heading.
+                 (dolist (event modified)
+                   (let* ((entry-id (org-gcal--format-entry-id
+                                     calendar-id (plist-get event :id)))
+                          (existing (org-gcal--id-find entry-id 'markerp)))
+                     (unless existing
+                       (atomic-change-group
+                         (org-with-point-at parent-marker
+                           (let ((level (org-current-level)))
+                             (org-end-of-subtree t t)
+                             (unless (bolp) (insert "\n"))
+                             (insert (make-string (1+ level) ?*) " \n"
+                                     ":PROPERTIES:\n:END:\n")
+                             (forward-line -2)
+                             (org-back-to-heading t)
+                             (org-gcal--update-entry calendar-id event
+                                                     'newly-fetched)
+                             (org-entry-put (point) org-gcal-managed-property
+                                            org-gcal-managed-newly-fetched-mode))))
+                       (when existing (set-marker existing nil))))
+                   ;; Prune existing child headings for unmodified instances.
+                   (org-gcal--prune-unmodified-children
+                    parent-marker parent-event calendar-id instances)))
+               (when parent-marker (set-marker parent-marker nil))))
+         (error
+          (message "org-gcal: compaction failed for %s: %S — skipping this recurring event"
+                   recurring-event-id err))))
      org-gcal--instance-collector)))
 
 (defun org-gcal--prune-unmodified-children (parent-marker parent-event
