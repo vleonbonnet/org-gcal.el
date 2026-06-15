@@ -2289,7 +2289,17 @@ timestamps with exception-aware compaction."
             (parent-entry-id (org-gcal--format-entry-id
                               calendar-id recurring-event-id))
             (parent-marker (org-gcal--id-find parent-entry-id 'markerp)))
-       (when (and parent-event parent-marker)
+       (when (and parent-event parent-marker
+                  ;; A stale id-location cache (or a buffer reverted by a
+                  ;; concurrent sync) can resolve PARENT-MARKER to a non-heading
+                  ;; position.  `org-current-level' would then return nil and the
+                  ;; `(1+ level)' computations below would signal
+                  ;; `number-or-marker-p' on nil, escaping uncaught and aborting
+                  ;; the rest of the multi-calendar sync.  Skip such an entry.
+                  (or (org-with-point-at parent-marker (org-at-heading-p))
+                      (ignore
+                       (message "org-gcal: skipping compaction for %s — parent marker not on a heading (stale id-location cache?)"
+                                recurring-event-id))))
          (let ((modified nil)
                (cancelled nil)
                (unmodified-count 0))
