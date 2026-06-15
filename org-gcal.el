@@ -956,7 +956,16 @@ Any parent recurring events are appended in-place to the list PARENT-EVENTS."
            (let* ((parent-entry-id
                    (org-gcal--format-entry-id calendar-id recurring-event-id))
                   (parent-marker (org-gcal--id-find parent-entry-id 'markerp)))
-             (when parent-marker
+             (when (and parent-marker
+                        ;; Guard against a stale id-location cache resolving the
+                        ;; parent to a non-heading position: `org-current-level'
+                        ;; would be nil and the `(1+ level)' below would signal
+                        ;; `number-or-marker-p' on nil, escaping uncaught and
+                        ;; aborting the rest of the multi-calendar sync.
+                        (or (org-with-point-at parent-marker (org-at-heading-p))
+                            (ignore
+                             (message "org-gcal: skipping instance of %s — parent marker not on a heading (stale id-location cache?)"
+                                      recurring-event-id))))
                (unless (org-gcal--event-cancelled-p event)
                  (atomic-change-group
                    (org-with-point-at parent-marker
