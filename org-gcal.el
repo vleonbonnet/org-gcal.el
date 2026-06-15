@@ -1467,7 +1467,17 @@ Point must be on a heading.  The body region is everything after all
 drawers and planning lines, up to the next heading or end of subtree."
   (save-excursion
     (org-gcal--back-to-heading)
-    (let ((body-start (save-excursion (org-end-of-meta-data t) (point)))
+    (let ((body-start (save-excursion
+                        (org-end-of-meta-data t)
+                        ;; `org-end-of-meta-data' skips the blank line(s) that
+                        ;; org-gcal inserts between the drawers and the body.
+                        ;; Back over them so they are part of the deleted region;
+                        ;; otherwise the leading blank line survives each sync
+                        ;; while the rewrite prepends another, accumulating a
+                        ;; spurious blank line below the body.
+                        (skip-chars-backward " \t\n")
+                        (unless (eobp) (forward-line 1))
+                        (point)))
           (body-end (save-excursion (outline-next-heading) (point))))
       (when (< body-start body-end)
         (delete-region body-start body-end)))))
