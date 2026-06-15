@@ -776,6 +776,11 @@ When SINGLE-EVENTS is non-nil, pass singleEvents=true to the API."
         `(("timeMin" . ,(org-gcal--format-time2iso up-time))
           ("timeMax" . ,(org-gcal--format-time2iso down-time))))))
      (when page-token `(("pageToken" . ,page-token))))
+    ;; `org-gcal--sync-handle-response' inspects the resolved response and
+    ;; recovers from handled failures (e.g. a 410 sync-token expiry, which is
+    ;; routine for read-only calendars like Holidays).  Mute request.el's
+    ;; default error callback so those don't spam "[error]" into *Messages*.
+    :error #'ignore
     :parser 'org-gcal--json-read)))
 
 (defun org-gcal--sync-request-instances
@@ -794,6 +799,9 @@ When SINGLE-EVENTS is non-nil, pass singleEvents=true to the API."
         ("timeMin" . ,(org-gcal--format-time2iso up-time))
         ("timeMax" . ,(org-gcal--format-time2iso down-time)))
       (when page-token `(("pageToken" . ,page-token))))
+     ;; See `org-gcal--sync-request-events': errors are handled via the resolved
+     ;; response, so mute request.el's default error callback.
+     :error #'ignore
      :parser 'org-gcal--json-read)))
 
 (defun org-gcal--sync-handle-response
