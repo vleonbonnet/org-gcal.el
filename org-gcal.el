@@ -1119,13 +1119,26 @@ have been moved from the default fetch file.  CALENDAR-ID is defined in
                            ;; server. Otherwise, sync the entry at the current
                            ;; point.
                            (set-marker marker nil)
-                           (if (and skip-export event)
-                               (progn
-                                 (org-gcal--update-entry calendar-id event
-                                                         'update-existing inactive-p)
-                                 (deferred:succeed nil))
+                           (cond
+                            ;; A server etag equal to the stored one means the
+                            ;; event is unchanged: skip the rewrite.  Rewriting
+                            ;; identical text still marks the buffer modified,
+                            ;; causing file-save churn on calendars whose sync
+                            ;; tokens Google expires with HTTP 410 on nearly
+                            ;; every sync (e.g. public holiday calendars),
+                            ;; degrading each sync to a full re-fetch.
+                            ((and skip-export event
+                                  (plist-get event :etag)
+                                  (equal (plist-get event :etag)
+                                         (org-entry-get (point) org-gcal-etag-property)))
+                             (deferred:succeed nil))
+                            ((and skip-export event)
+                             (org-gcal--update-entry calendar-id event
+                                                     'update-existing inactive-p)
+                             (deferred:succeed nil))
+                            (t
                              (org-gcal-post-at-point nil skip-export
-                                                     (org-gcal--sync-get-update-existing)))))))
+                                                     (org-gcal--sync-get-update-existing))))))))
                      ;; Log but otherwise ignore errors.
                      (deferred:error it
                                      (lambda (err)
