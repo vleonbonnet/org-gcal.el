@@ -1429,7 +1429,23 @@ With optional argument MARKERP, return the position as a new marker."
    ;; which slows us down considerably, and tries to fall back to the current
    ;; buffer, which we don't want either.
    (when-let* ((file (org-gcal--find-id-file id)))
-     (org-id-find-id-in-file id file markerp))))
+     (org-id-find-id-in-file id file markerp))
+   ;; Last-chance direct search of the current buffer.  A stale
+   ;; id-locations entry mapping ID to the wrong file wins the `or'
+   ;; inside `org-generic-id-find-id-file', so its current-buffer
+   ;; fallback never runs and the lookup above returns nil even when
+   ;; the heading sits in this very buffer.  During a fetch the current
+   ;; buffer is the calendar file, and a nil here makes the fetch loop
+   ;; insert a duplicate heading for a re-delivered event — search the
+   ;; buffer text before concluding the entry is absent.
+   (when (derived-mode-p 'org-mode)
+     (when-let* ((file (buffer-file-name
+                        (or (buffer-base-buffer) (current-buffer))))
+                 (pos (org-with-wide-buffer
+                       (org-find-property org-gcal-entry-id-property id))))
+       (if markerp
+           (move-marker (make-marker) pos (current-buffer))
+         (cons file pos))))))
 
 (defun org-gcal--find-id-file (id)
   "Query the id database for the file in which this ID is located.
