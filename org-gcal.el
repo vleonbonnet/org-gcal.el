@@ -1838,8 +1838,19 @@ delete calendar info from events on calendars you no longer have access to."
                (deferred:succeed nil))))
         (deferred:succeed nil)))))
 
+(defun org-gcal--ensure-oauth2-provider ()
+  "Register the `org-gcal' OAuth2 provider from the current credentials.
+Called before every token request, so `org-gcal-client-id' and
+`org-gcal-client-secret' may be set at any time before the first sync,
+including after org-gcal has been loaded.  Signal a `user-error' if
+either is unset."
+  (unless (and org-gcal-client-id org-gcal-client-secret)
+    (user-error "org-gcal: must set `org-gcal-client-id' and `org-gcal-client-secret' for this package to work"))
+  (org-gcal-reload-client-id-secret))
+
 (defun org-gcal--get-access-token (calendar-id)
   "Return the access token for the account owning CALENDAR-ID."
+  (org-gcal--ensure-oauth2-provider)
   (aio-wait-for
    (oauth2-auto-access-token (org-gcal--account calendar-id) 'org-gcal)))
 
@@ -1849,6 +1860,7 @@ delete calendar info from events on calendars you no longer have access to."
   ;; project has been rewritten to use aio
   ;; (https://github.com/kidd/org-gcal.el/issues/191), we can wait for this
   ;; asynchronously as well.
+  (org-gcal--ensure-oauth2-provider)
   (let ((token
          (aio-wait-for
           (oauth2-auto-access-token (org-gcal--account calendar-id) 'org-gcal))))
@@ -3249,22 +3261,24 @@ non-nil."
 
 
 (defun org-gcal-reload-client-id-secret ()
-  "Setup OAuth2 authentication after setting client ID and secret."
+  "Setup OAuth2 authentication after setting client ID and secret.
+This runs automatically before every token request, so calling it
+by hand is only needed when using the `org-gcal' provider directly
+through `oauth2-auto'."
   (interactive)
-  (add-to-list
-   'oauth2-auto-additional-providers-alist
-   `(org-gcal
-     (authorize_url . "https://accounts.google.com/o/oauth2/auth")
-     (token_url . "https://oauth2.googleapis.com/token")
-     (scope . "https://www.googleapis.com/auth/calendar")
-     (client_id . ,org-gcal-client-id)
-     (client_secret . ,org-gcal-client-secret))))
+  ;; Replace any existing entry so changed credentials take effect.
+  (setf (alist-get 'org-gcal oauth2-auto-additional-providers-alist)
+        `((authorize_url . "https://accounts.google.com/o/oauth2/auth")
+          (token_url . "https://oauth2.googleapis.com/token")
+          (scope . "https://www.googleapis.com/auth/calendar")
+          (client_id . ,org-gcal-client-id)
+          (client_secret . ,org-gcal-client-secret))))
 
-(if (and org-gcal-client-id org-gcal-client-secret)
-    (org-gcal-reload-client-id-secret)
-  ;; Don't print warning during tests.
-  (unless noninteractive
-    (warn "org-gcal: must set 'org-gcal-client-id' and 'org-gcal-client-secret' for this package to work. Please run 'org-gcal-reload-client-id-secret' after setting these variables.")))
+;; Credentials may also be set after load (e.g. from a `use-package'
+;; `:config' block); `org-gcal--ensure-oauth2-provider' handles that case
+;; and reports missing credentials when a token is actually needed.
+(when (and org-gcal-client-id org-gcal-client-secret)
+  (org-gcal-reload-client-id-secret))
 
 (provide 'org-gcal)
 

@@ -1628,6 +1628,114 @@ Second paragraph
         (should-not (string-match-p "</?[a-zA-Z][^>]*>" contents))
         (should (string-match-p "& more info" contents))))))
 
+;;; OAuth2 provider registration
+
+(defun org-gcal-test--resolved-aio-promise (value)
+  "Return an `aio' promise already resolved to VALUE."
+  (let ((promise (aio-promise)))
+    (aio-resolve promise (lambda () value))
+    promise))
+
+(defmacro org-gcal-test--with-oauth2-stub (seen &rest body)
+  "Run BODY with `oauth2-auto-access-token' stubbed.
+The stub pushes the `org-gcal' provider info it sees onto SEEN and
+returns a resolved promise for \"test_token\"."
+  (declare (indent 1))
+  `(cl-letf (((symbol-function 'oauth2-auto-access-token)
+              (lambda (_username provider)
+                (push (oauth2-auto--provider-info provider) ,seen)
+                (org-gcal-test--resolved-aio-promise "test_token"))))
+     ,@body))
+
+(ert-deftest org-gcal-test--get-access-token-registers-provider ()
+  "Credentials set after load are registered before a token is fetched."
+  (let ((oauth2-auto-additional-providers-alist nil)
+        (org-gcal-client-id "late_client_id")
+        (org-gcal-client-secret "late_client_secret")
+        (seen nil))
+    (org-gcal-test--with-oauth2-stub seen
+      (should (equal (org-gcal--get-access-token org-gcal-test-calendar-id)
+                     "test_token")))
+    (should (= (length seen) 1))
+    (should (equal (alist-get 'client_id (car seen)) "late_client_id"))
+    (should (equal (alist-get 'client_secret (car seen))
+                   "late_client_secret"))))
+
+(ert-deftest org-gcal-test--refresh-token-registers-provider ()
+  "`org-gcal--refresh-token' also registers the provider first."
+  (let ((oauth2-auto-additional-providers-alist nil)
+        (org-gcal-client-id "late_client_id")
+        (org-gcal-client-secret "late_client_secret")
+        (seen nil))
+    (org-gcal-test--with-oauth2-stub seen
+      (should (equal (deferred:sync!
+                       (org-gcal--refresh-token org-gcal-test-calendar-id))
+                     "test_token")))
+    (should (= (length seen) 1))
+    (should (equal (alist-get 'client_id (car seen)) "late_client_id"))))
+
+(ert-deftest org-gcal-test--get-access-token-missing-credentials ()
+  "A missing client ID or secret signals `user-error' before any request."
+  (dolist (creds '((nil . "secret") ("id" . nil) (nil . nil)))
+    (let ((oauth2-auto-additional-providers-alist nil)
+          (org-gcal-client-id (car creds))
+          (org-gcal-client-secret (cdr creds))
+          (seen nil))
+      (org-gcal-test--with-oauth2-stub seen
+        (should-error (org-gcal--get-access-token org-gcal-test-calendar-id)
+                      :type 'user-error))
+      (should-not seen)
+      (should-not (assq 'org-gcal oauth2-auto-additional-providers-alist)))))
+
+(ert-deftest org-gcal-test--reload-client-id-secret-replaces-entry ()
+  "Changed credentials replace the registered provider instead of stacking."
+  (let ((oauth2-auto-additional-providers-alist
+         (list (list 'other-provider (cons 'client_id "other"))))
+        (org-gcal-client-id "old_id")
+        (org-gcal-client-secret "old_secret"))
+    (org-gcal-reload-client-id-secret)
+    (setq org-gcal-client-id "new_id"
+          org-gcal-client-secret "new_secret")
+    (org-gcal-reload-client-id-secret)
+    (should (= (cl-count 'org-gcal oauth2-auto-additional-providers-alist
+                         :key #'car)
+               1))
+    (should (assq 'other-provider oauth2-auto-additional-providers-alist))
+    (let ((info (oauth2-auto--provider-info 'org-gcal)))
+      (should (equal (alist-get 'client_id info) "new_id"))
+      (should (equal (alist-get 'client_secret info) "new_secret")))))
+
+(ert-deftest org-gcal-test--load-without-credentials-does-not-warn ()
+  "Loading org-gcal before credentials are set neither warns nor registers.
+Runs in a child Emacs so a fresh load does not disturb this session."
+  (let* ((form
+          `(progn
+             (setq load-path ',load-path)
+             (advice-add 'display-warning :override
+                         (lambda (&rest args)
+                           (princ (format "WARNING: %S\n" args))))
+             ;; The old load-time warning was skipped in batch mode.  Bind,
+             ;; don't set: batch Emacs only exits after --eval when
+             ;; `noninteractive' is non-nil.
+             (let ((noninteractive nil))
+               (require 'org-gcal))
+             (princ (format "REGISTERED: %S\n"
+                            (and (assq 'org-gcal
+                                       oauth2-auto-additional-providers-alist)
+                                 t)))
+             (kill-emacs 0)))
+         (output
+          (with-temp-buffer
+            (let ((status (call-process
+                           (expand-file-name invocation-name
+                                             invocation-directory)
+                           nil t nil "--batch" "-Q"
+                           "--eval" (prin1-to-string form))))
+              (should (eql status 0)))
+            (buffer-string))))
+    (should (string-match-p "^REGISTERED: nil$" output))
+    (should-not (string-match-p "^WARNING: " output))))
+
 ;;; TODO: Figure out mocking for POST/PATCH followed by GET
 ;;; - ‘mock‘ might work for this - the argument list must be specified up
 ;;;   front, but the wildcard ‘*’ can be used to match any value. If that

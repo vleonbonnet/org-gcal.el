@@ -113,6 +113,8 @@ OOB clients on January 31, 2023.]]
 (require 'org-gcal)
 #+end_src
 
+The client ID and secret only need to be set before the first sync, not before org-gcal is loaded, so they can also be set later, e.g. from a password manager in a ~use-package~ ~:config~ block.  If they are still unset when org-gcal needs an OAuth token, it signals an error.
+
 *** Note
 
 This package uses ~plstore~ as a dependency for storing OAuth tokens. In order
