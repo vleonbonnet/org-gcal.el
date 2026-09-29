@@ -639,33 +639,67 @@ Second paragraph
     (let ((org-gcal-managed-post-at-point-update-existing 'always-push))
       (org-gcal-post-at-point)))))
 
-(ert-deftest org-gcal-test--sync-update-entries-stale-marker ()
-  "Verify sync reports a clear error for entries with stale markers."
-  (let ((errors nil))
-    (cl-letf (((symbol-function 'deferred:loop)
-               (lambda (entries body)
-                 (funcall body (car entries))))
-              ((symbol-function 'error)
+(defun org-gcal-test--sync-update-stale-entry (refound)
+  "Run `org-gcal--sync-update-entries' on one entry with a stale marker.
+The entry is synced with `skip-export', so it is updated from
+`org-gcal-test-event'.  `org-gcal--id-find', used to re-find the
+entry after its cached marker went stale, is stubbed to return REFOUND."
+  (cl-letf (((symbol-function 'deferred:loop)
+             (lambda (entries body)
+               (funcall body (car entries))))
+            ((symbol-function 'org-gcal--id-find)
+             (lambda (&rest _) refound)))
+    (deferred:sync!
+     (org-gcal--sync-update-entries
+      org-gcal-test-calendar-id
+      (list
+       (org-gcal--event-entry-create
+        :entry-id "foobar1234/foo@foobar.com"
+        :marker (org-gcal-test--stale-marker "* My event summary\n")
+        :event org-gcal-test-event))
+      t))))
+
+(ert-deftest org-gcal-test--sync-update-entries-stale-marker-refinds-entry ()
+  "Verify sync re-finds an entry by ID when its cached marker is stale."
+  (org-gcal-test--with-temp-buffer
+      "\
+* Old event summary
+:PROPERTIES:
+:calendar-id: foo@foobar.com
+:entry-id:       foobar1234/foo@foobar.com
+:END:
+"
+    (org-gcal-test--sync-update-stale-entry (point-marker))
+    (goto-char (point-min))
+    (let ((elem (org-element-at-point)))
+      (should (equal (org-gcal-test--title-to-string elem)
+                     "My event summary"))
+      (should (equal (org-element-property :ETAG elem)
+                     "\"12344321\"")))))
+
+(ert-deftest org-gcal-test--sync-update-entries-stale-marker-not-found ()
+  "Verify sync skips an entry whose stale marker cannot be re-found."
+  (let ((messages nil))
+    (cl-letf (((symbol-function 'message)
                (lambda (format-string &rest args)
-                 (let ((message (apply #'format format-string args)))
-                   (push message errors)
-                   (signal 'error (list message))))))
-      (ignore-errors
-        (deferred:sync!
-         (org-gcal--sync-update-entries
-          org-gcal-test-calendar-id
-          (list
-           (org-gcal--event-entry-create
-            :entry-id "foobar1234/foo@foobar.com"
-            :marker (org-gcal-test--stale-marker "* My event summary\n")
-            :event org-gcal-test-event))
-          t)))
-      (should
-       (cl-some
-        (lambda (error)
-          (string-match-p "marker.*buffer.*foobar1234/foo@foobar.com.*killed"
-                          error))
-        errors)))))
+                 (push (apply #'format format-string args) messages)))
+              ((symbol-function 'org-gcal--update-entry)
+               (lambda (&rest _)
+                 (ert-fail "org-gcal--update-entry called for missing entry"))))
+      (org-gcal-test--sync-update-stale-entry nil))
+    (should
+     (cl-some
+      (lambda (message)
+        (string-match-p "skipping entry foobar1234/foo@foobar.com.*not found"
+                        message))
+      messages))))
+
+(ert-deftest org-gcal-test--sync-update-entries-refound-marker-killed ()
+  "Verify sync reports a clear error when the re-found marker is also stale."
+  (org-gcal-test--should-error-match
+      "marker.*buffer.*foobar1234/foo@foobar.com.*killed"
+    (org-gcal-test--sync-update-stale-entry
+     (org-gcal-test--stale-marker "* My event summary\n"))))
 
 (ert-deftest org-gcal-test--with-point-at-no-widen-stale-marker ()
   "Verify stale markers report the killed buffer before moving point."
