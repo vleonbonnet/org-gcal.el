@@ -668,7 +668,8 @@ INSTANCES-PASS is nil for legacy, :masters for pass 1, :instances for pass 2."
                      (lambda (entries)
                        (org-gcal--sync-update-entries calendar-id entries skip-export)))
      ;; Retrieve the next page of results if needed, otherwise (in pass 2)
-     ;; run compaction once over the fully-populated instance collector.
+     ;; run compaction once over the fully-populated instance collector,
+     ;; and update the instance headings it found outside the ID index.
      (deferred:nextc it
                      (lambda (_)
                        (let ((pt (car (last page-token-cons))))
@@ -681,8 +682,10 @@ INSTANCES-PASS is nil for legacy, :masters for pass 1, :instances for pass 2."
                                 org-gcal--instance-collector
                                 (> (hash-table-count
                                     org-gcal--instance-collector) 0))
-                           (org-gcal--compact-instances calendar-id calendar-file)
-                           (deferred:succeed nil))
+                           (org-gcal--sync-update-entries
+                            calendar-id
+                            (org-gcal--compact-instances calendar-id calendar-file)
+                            skip-export))
                           (t (deferred:succeed nil)))))))))
 
 (defun org-gcal--sync-instances
@@ -969,8 +972,29 @@ Any parent recurring events are appended in-place to the list PARENT-EVENTS."
            ;; Fallback: no cached parent, insert directly.
            (let* ((parent-entry-id
                    (org-gcal--format-entry-id calendar-id recurring-event-id))
-                  (parent-marker (org-gcal--id-find parent-entry-id 'markerp)))
-             (when (and parent-marker
+                  (parent-marker (org-gcal--id-find parent-entry-id 'markerp))
+                  ;; Instances are inserted under their parent, so look for
+                  ;; this one there too: the ID index misses an instance
+                  ;; that another computer inserted since it was updated.
+                  (child (and parent-marker
+                              (org-gcal--id-find-in-buffer
+                               entry-id (marker-buffer parent-marker)
+                               'markerp))))
+             (prog1
+                 (cond
+                  ((and child (org-gcal--event-cancelled-p event))
+                   (org-gcal--index-found-entry entry-id child)
+                   (org-with-point-at child
+                     (org-gcal--handle-cancelled-entry))
+                   (set-marker child nil)
+                   nil)
+                  (child
+                   (org-gcal--index-found-entry entry-id child)
+                   (org-gcal--event-entry-create
+                    :entry-id entry-id
+                    :marker child
+                    :event event))
+                  ((and parent-marker
                         ;; Guard against a stale id-location cache resolving the
                         ;; parent to a non-heading position: `org-current-level'
                         ;; would be nil and the `(1+ level)' below would signal
@@ -980,21 +1004,21 @@ Any parent recurring events are appended in-place to the list PARENT-EVENTS."
                             (ignore
                              (message "org-gcal: skipping instance of %s — parent marker not on a heading (stale id-location cache?)"
                                       recurring-event-id))))
-               (unless (org-gcal--event-cancelled-p event)
-                 (atomic-change-group
-                   (org-with-point-at parent-marker
-                     (let ((level (org-current-level)))
-                       (org-end-of-subtree t t)
-                       (unless (bolp) (insert "\n"))
-                       (insert (make-string (1+ level) ?*) " \n"
-                               ":PROPERTIES:\n:END:\n")
-                       (forward-line -2)
-                       (org-back-to-heading t)
-                       (org-gcal--update-entry calendar-id event 'newly-fetched)
-                       (org-entry-put (point) org-gcal-managed-property
-                                      org-gcal-managed-newly-fetched-mode)))))
-               (when parent-marker (set-marker parent-marker nil)))
-             nil)))
+                   (unless (org-gcal--event-cancelled-p event)
+                     (atomic-change-group
+                       (org-with-point-at parent-marker
+                         (let ((level (org-current-level)))
+                           (org-end-of-subtree t t)
+                           (unless (bolp) (insert "\n"))
+                           (insert (make-string (1+ level) ?*) " \n"
+                                   ":PROPERTIES:\n:END:\n")
+                           (forward-line -2)
+                           (org-back-to-heading t)
+                           (org-gcal--update-entry calendar-id event 'newly-fetched)
+                           (org-entry-put (point) org-gcal-managed-property
+                                          org-gcal-managed-newly-fetched-mode)))))
+                   nil))
+               (when parent-marker (set-marker parent-marker nil))))))
         ;; --- instances mode: pass 1 (masters) ---
         ;; Skip exception instances (have recurringEventId but no recurrence)
         ;; unless already tracked.
@@ -1448,14 +1472,7 @@ With optional argument MARKERP, return the position as a new marker."
      ;; buffer is the calendar file, and a nil here makes the fetch loop
      ;; insert a duplicate heading for a re-delivered event — search the
      ;; buffer text before concluding the entry is absent.
-     (when (derived-mode-p 'org-mode)
-       (when-let* ((file (buffer-file-name
-                          (or (buffer-base-buffer) (current-buffer))))
-                   (pos (org-with-wide-buffer
-                         (org-find-property org-gcal-entry-id-property id))))
-         (if markerp
-             (move-marker (make-marker) pos (current-buffer))
-           (cons file pos))))
+     (org-gcal--id-find-in-buffer id (current-buffer) markerp)
      ;; The index records ID in a file that no longer holds it: the entry
      ;; moved after the last scan.  Rescan changed files and look again
      ;; before reporting it missing, since a fetch inserts a new heading for
@@ -1464,6 +1481,29 @@ With optional argument MARKERP, return the position as a new marker."
        (org-generic-id-update-id-locations org-gcal-entry-id-property nil
                                            'silent)
        (org-generic-id-find org-gcal-entry-id-property id markerp 'cached)))))
+
+(defun org-gcal--id-find-in-buffer (id buffer &optional markerp)
+  "Return the location of the entry with the id ID in BUFFER.
+Search the text of BUFFER, an Org buffer visiting a file, without
+consulting the ID index.  Return nil if BUFFER holds no such entry, and
+otherwise a location as returned by `org-gcal--id-find'."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (when (derived-mode-p 'org-mode)
+        (when-let* ((file (buffer-file-name
+                           (or (buffer-base-buffer) (current-buffer))))
+                    (pos (org-with-wide-buffer
+                          (org-find-property org-gcal-entry-id-property id))))
+          (if markerp
+              (move-marker (make-marker) pos (current-buffer))
+            (cons file pos)))))))
+
+(defun org-gcal--index-found-entry (entry-id marker)
+  "Record in the ID index that the entry with ENTRY-ID is at MARKER.
+For an entry found without the index, so that later lookups find it."
+  (let ((buf (marker-buffer marker)))
+    (when-let* ((file (buffer-file-name (or (buffer-base-buffer buf) buf))))
+      (org-generic-id-add-location org-gcal-entry-id-property entry-id file))))
 
 (defun org-gcal--find-id-file (id)
   "Query the id database for the file in which this ID is located.
@@ -2370,8 +2410,12 @@ In drawer mode, replaces timestamps inside the :org-gcal: drawer."
 (defun org-gcal--compact-instances (calendar-id _calendar-file)
   "Process collected instances, inserting only modified ones as children.
 Also prunes existing unmodified child headings and rebuilds parent
-timestamps with exception-aware compaction."
-  (let ((org-gcal--time-string-cache (make-hash-table :test 'equal)))
+timestamps with exception-aware compaction.  Return entries, as made by
+`org-gcal--event-entry-create', for the modified instances that have a
+heading the ID index did not know about, to be updated by
+`org-gcal--sync-update-entries'."
+  (let ((org-gcal--time-string-cache (make-hash-table :test 'equal))
+        (found nil))
     (maphash
      (lambda (recurring-event-id instances)
        (condition-case err
@@ -2416,8 +2460,25 @@ timestamps with exception-aware compaction."
                  (dolist (event modified)
                    (let* ((entry-id (org-gcal--format-entry-id
                                      calendar-id (plist-get event :id)))
-                          (existing (org-gcal--id-find entry-id 'markerp)))
-                     (unless existing
+                          (existing (org-gcal--id-find entry-id 'markerp))
+                          ;; Instances are inserted under their parent, so
+                          ;; look for this one there too: the ID index
+                          ;; misses an instance that another computer
+                          ;; inserted since it was updated.
+                          (child (unless existing
+                                   (org-gcal--id-find-in-buffer
+                                    entry-id (marker-buffer parent-marker)
+                                    'markerp))))
+                     (cond
+                      (existing (set-marker existing nil))
+                      (child
+                       (org-gcal--index-found-entry entry-id child)
+                       (push (org-gcal--event-entry-create
+                              :entry-id entry-id
+                              :marker child
+                              :event event)
+                             found))
+                      (t
                        (atomic-change-group
                          (org-with-point-at parent-marker
                            (let ((level (org-current-level)))
@@ -2430,8 +2491,7 @@ timestamps with exception-aware compaction."
                              (org-gcal--update-entry calendar-id event
                                                      'newly-fetched)
                              (org-entry-put (point) org-gcal-managed-property
-                                            org-gcal-managed-newly-fetched-mode))))
-                       (when existing (set-marker existing nil))))
+                                            org-gcal-managed-newly-fetched-mode)))))))
                    ;; Prune existing child headings for unmodified instances.
                    (org-gcal--prune-unmodified-children
                     parent-marker parent-event calendar-id instances)))
@@ -2439,7 +2499,8 @@ timestamps with exception-aware compaction."
          (error
           (message "org-gcal: compaction failed for %s: %S — skipping this recurring event"
                    recurring-event-id err))))
-     org-gcal--instance-collector)))
+     org-gcal--instance-collector)
+    (nreverse found)))
 
 (defun org-gcal--prune-unmodified-children (parent-marker parent-event
                                                           _calendar-id instances)

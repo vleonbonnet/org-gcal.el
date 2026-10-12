@@ -812,6 +812,216 @@ they left."
       (should-not org-gcal--sync-lock))
     (should-not calls)))
 
+;;; Instances of recurring events
+
+(defconst org-gcal-test--parent-event
+  `(:kind "calendar#event" :etag "\"1\"" :id "parent123" :status "confirmed"
+    :summary "My recurring event"
+    :start (:dateTime "2026-09-30T08:00:00-07:00")
+    :end (:dateTime "2026-09-30T13:00:00-07:00"))
+  "Master of a recurring event, without the recurrence rule.
+Compaction then leaves the parent's timestamps alone.")
+
+(defconst org-gcal-test--moved-instance
+  `(:kind "calendar#event" :etag "\"2\"" :id "parent123_20261014T150000Z"
+    :status "confirmed" :summary "My recurring event"
+    :recurringEventId "parent123"
+    :originalStartTime (:dateTime "2026-10-14T08:00:00-07:00")
+    :start (:dateTime "2026-10-16T08:00:00-07:00")
+    :end (:dateTime "2026-10-16T13:00:00-07:00"))
+  "Instance of `org-gcal-test--parent-event' moved to another day.")
+
+(defconst org-gcal-test--parent-entry
+  "* Calendar
+** My recurring event
+:PROPERTIES:
+:calendar-id: foo@foobar.com
+:entry-id: parent123/foo@foobar.com
+:org-gcal-managed: gcal
+:END:
+"
+  "Heading of `org-gcal-test--parent-event'.")
+
+(defconst org-gcal-test--instance-entry
+  "*** My recurring event
+:PROPERTIES:
+:ETag:     \"2\"
+:calendar-id: foo@foobar.com
+:entry-id: parent123_20261014T150000Z/foo@foobar.com
+:org-gcal-managed: gcal
+:END:
+
+<2026-10-16 Fri 08:00-13:00>
+"
+  "Heading of `org-gcal-test--moved-instance', under its parent.")
+
+(defconst org-gcal-test--instance-entry-id
+  "parent123_20261014T150000Z/foo@foobar.com")
+
+(defun org-gcal-test--write-file (file seconds &rest contents)
+  "Write CONTENTS to FILE, modified SECONDS after a fixed base time."
+  (with-temp-file file
+    (apply #'insert contents))
+  (set-file-times file (time-add (seconds-to-time 1767268800) seconds)))
+
+(defmacro org-gcal-test--with-instance-files (instance-p &rest body)
+  "Run BODY with a parent file and a calendar file visited.
+The parent file holds `org-gcal-test--parent-entry', followed by
+`org-gcal-test--instance-entry' if INSTANCE-P.  The ID index scans both
+files, but records only the parent: it doesn't know about an instance
+another computer added.  BODY runs in the calendar file's buffer, and
+can refer to `parent-file', `parent-buffer' and `calendar-file'."
+  (declare (indent 1) (debug t))
+  `(let* ((parent-file (abbreviate-file-name
+                        (file-truename (make-temp-file "parent." nil ".org"))))
+          (calendar-file (abbreviate-file-name
+                          (file-truename
+                           (make-temp-file "calendar." nil ".org"))))
+          (org-generic-id-locations (org-generic-id--make-hash-table))
+          (org-generic-id--file-fingerprints nil)
+          (org-generic-id--reported-duplicates
+           (org-generic-id--make-hash-table))
+          (org-generic-id-locations-file
+           (make-temp-file "org-generic-id-locations."))
+          (org-agenda-files (list parent-file calendar-file))
+          (org-generic-id-extra-files nil)
+          (org-generic-id-search-archives nil)
+          (org-id-locations (make-hash-table :test #'equal))
+          (org-gcal--parent-event-cache nil)
+          (org-gcal--instance-collector nil)
+          (parent-buffer nil)
+          (calendar-buffer nil))
+     (org-gcal-test--write-file parent-file 0 org-gcal-test--parent-entry
+                                (if ,instance-p
+                                    org-gcal-test--instance-entry
+                                  ""))
+     (org-gcal-test--write-file calendar-file 0 "")
+     (unwind-protect
+         (progn
+           (setq parent-buffer (find-file-noselect parent-file)
+                 calendar-buffer (find-file-noselect calendar-file))
+           (org-generic-id-update-id-locations org-gcal-entry-id-property
+                                               nil t)
+           (remhash org-gcal-test--instance-entry-id
+                    (gethash org-gcal-entry-id-property
+                             org-generic-id-locations))
+           (with-current-buffer calendar-buffer
+             ,@body))
+       (dolist (buffer (list parent-buffer calendar-buffer))
+         (when (buffer-live-p buffer)
+           (with-current-buffer buffer (set-buffer-modified-p nil))
+           (kill-buffer buffer))))))
+
+(defun org-gcal-test--count-instance-entries (buffer)
+  "Return the number of entries for the moved instance in BUFFER."
+  (with-current-buffer buffer
+    (org-with-wide-buffer
+     (goto-char (point-min))
+     (how-many (concat "^:entry-id: "
+                       (regexp-quote org-gcal-test--instance-entry-id)
+                       "$")))))
+
+(ert-deftest org-gcal-test--id-find-instance-after-revert ()
+  "Verify `org-gcal--id-find' finds an entry read by reverting its buffer.
+Another computer added it to the file after the ID index was updated."
+  (org-gcal-test--with-instance-files nil
+    (should-not (org-gcal--id-find org-gcal-test--instance-entry-id))
+    (org-gcal-test--write-file parent-file 60 org-gcal-test--parent-entry
+                               org-gcal-test--instance-entry)
+    (with-current-buffer parent-buffer
+      (revert-buffer t t t))
+    (let ((marker (org-gcal--id-find org-gcal-test--instance-entry-id
+                                     'markerp)))
+      (should (eq (marker-buffer marker) parent-buffer)))))
+
+(ert-deftest org-gcal-test--compact-instances-finds-unindexed-instance ()
+  "Verify compaction doesn't insert an instance already under its parent.
+The ID index misses the instance, and the calendar file is not the
+parent's.  Compaction returns the existing entry for an update."
+  (org-gcal-test--with-instance-files t
+    (let ((org-gcal--parent-event-cache (make-hash-table :test #'equal))
+          (org-gcal--instance-collector (make-hash-table :test #'equal)))
+      (puthash "parent123" org-gcal-test--parent-event
+               org-gcal--parent-event-cache)
+      (puthash "parent123" (list org-gcal-test--moved-instance)
+               org-gcal--instance-collector)
+      (let ((entries (org-gcal--compact-instances org-gcal-test-calendar-id
+                                                  calendar-file)))
+        (should (= (length entries) 1))
+        (should (equal (org-gcal--event-entry-entry-id (car entries))
+                       org-gcal-test--instance-entry-id))
+        (should (eq (marker-buffer (org-gcal--event-entry-marker (car entries)))
+                    parent-buffer))
+        (should (eq (org-gcal--event-entry-event (car entries))
+                    org-gcal-test--moved-instance))))
+    (should (= (org-gcal-test--count-instance-entries parent-buffer) 1))
+    (should (equal (org-generic-id-find-id-file
+                    org-gcal-entry-id-property org-gcal-test--instance-entry-id
+                    'no-fallback)
+                   parent-file))))
+
+(ert-deftest org-gcal-test--compact-instances-inserts-missing-instance ()
+  "Verify compaction inserts a modified instance missing from its parent."
+  (org-gcal-test--with-instance-files nil
+    (let ((org-gcal--parent-event-cache (make-hash-table :test #'equal))
+          (org-gcal--instance-collector (make-hash-table :test #'equal)))
+      (puthash "parent123" org-gcal-test--parent-event
+               org-gcal--parent-event-cache)
+      (puthash "parent123" (list org-gcal-test--moved-instance)
+               org-gcal--instance-collector)
+      (should-not (org-gcal--compact-instances org-gcal-test-calendar-id
+                                               calendar-file)))
+    (should (= (org-gcal-test--count-instance-entries parent-buffer) 1))))
+
+(ert-deftest org-gcal-test--sync-handle-events-finds-unindexed-instance ()
+  "Verify an instance of an uncached parent already under it is not inserted.
+Pass 2 inserts such an instance directly under its parent; it returns
+the existing entry for an update instead."
+  (org-gcal-test--with-instance-files t
+    (let ((entries (org-gcal--sync-handle-events
+                    org-gcal-test-calendar-id calendar-file
+                    (vector org-gcal-test--moved-instance)
+                    nil nil nil nil nil :instances)))
+      (should (= (length entries) 1))
+      (should (equal (org-gcal--event-entry-entry-id (car entries))
+                     org-gcal-test--instance-entry-id))
+      (should (eq (marker-buffer (org-gcal--event-entry-marker (car entries)))
+                  parent-buffer)))
+    (should (= (org-gcal-test--count-instance-entries parent-buffer) 1))))
+
+(ert-deftest org-gcal-test--sync-handle-events-inserts-missing-instance ()
+  "Verify an instance of an uncached parent is inserted under it."
+  (org-gcal-test--with-instance-files nil
+    (should-not (org-gcal--sync-handle-events
+                 org-gcal-test-calendar-id calendar-file
+                 (vector org-gcal-test--moved-instance)
+                 nil nil nil nil nil :instances))
+    (should (= (org-gcal-test--count-instance-entries parent-buffer) 1))))
+
+(ert-deftest org-gcal-test--sync-calendar-events-updates-compacted-entries ()
+  "Verify the entries returned by compaction are updated."
+  (let ((updates nil)
+        (org-gcal--instance-collector (make-hash-table :test #'equal)))
+    (puthash "parent123" (list org-gcal-test--moved-instance)
+             org-gcal--instance-collector)
+    (cl-letf (((symbol-function 'org-gcal--sync-request-events)
+               (lambda (&rest _) (deferred:succeed nil)))
+              ((symbol-function 'org-gcal--sync-handle-response)
+               (lambda (&rest _) []))
+              ((symbol-function 'org-gcal--sync-handle-events)
+               (lambda (&rest _) nil))
+              ((symbol-function 'org-gcal--compact-instances)
+               (lambda (&rest _) '(compacted)))
+              ((symbol-function 'org-gcal--sync-update-entries)
+               (lambda (_calendar-id entries skip-export)
+                 (push (list entries skip-export) updates)
+                 (deferred:succeed nil))))
+      (org-gcal--sync-calendar-events
+       (cons org-gcal-test-calendar-id "calendar.org") 'skip-export nil nil
+       nil nil nil :instances)
+      (deferred:flush-queue!))
+    (should (member '((compacted) skip-export) updates))))
+
 (ert-deftest org-gcal-test--post-at-point-api-response ()
   "Verify that ‘org-gcal-post-to-point’ updates an event using the data
 returned from the Google Calendar API."
