@@ -535,6 +535,8 @@ For the =entry-id= property, a sync reports duplicates with a warning like this:
 
 =*Messages*= lists each duplicate as =Duplicate :entry-id: property "ID"=. Each duplicate is reported once per Emacs session, and again only if it recurs after it was resolved. Delete one of the two headlines; the other is updated by later syncs.
 
+When several computers sync the same Org files, a sync finds the entries another computer added once their file is reverted or visited again, since the ID index then reads it. A computer running an older version doesn't, and inserts those events again, so update org-gcal on all of them.
+
 
 * Similar applications
   [[https://github.com/dengste/org-caldav][dengste/org-caldav]]

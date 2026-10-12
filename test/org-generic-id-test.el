@@ -340,3 +340,185 @@ even though it did not change."
       (should-not (org-generic-id-test--update))
       (org-generic-id-test--write b 120 "id1")
       (should (= (length (org-generic-id-test--update)) 1)))))
+
+;;; Rereading a visited file
+
+(defmacro org-generic-id-test--visiting (var file &rest body)
+  "Run BODY with VAR bound to a buffer visiting FILE, killed afterwards."
+  (declare (indent 2) (debug t))
+  `(let ((,var (find-file-noselect ,file)))
+     (unwind-protect
+         (progn ,@body)
+       (when (buffer-live-p ,var)
+         (with-current-buffer ,var (set-buffer-modified-p nil))
+         (kill-buffer ,var)))))
+
+(defun org-generic-id-test--revert (buf)
+  "Revert BUF from its file and return the warnings raised."
+  (let (warnings)
+    (cl-letf (((symbol-function 'warn)
+               (lambda (format-string &rest args)
+                 (push (apply #'format format-string args) warnings))))
+      (with-current-buffer buf
+        (revert-buffer t t t)))
+    warnings))
+
+(defmacro org-generic-id-test--counting-reads (var &rest body)
+  "Run BODY, pushing onto VAR each file whose IDs are read."
+  (declare (indent 1) (debug t))
+  `(let ((file-ids (symbol-function 'org-generic-id--file-ids)))
+     (cl-letf (((symbol-function 'org-generic-id--file-ids)
+                (lambda (file &rest args)
+                  (push file ,var)
+                  (apply file-ids file args))))
+       ,@body)))
+
+(ert-deftest org-generic-id--revert-records-added-ids ()
+  "Reverting a visited file records the IDs added to it on disk.
+An update reads the buffer of a visited file, so an ID that another
+program added to the file is only seen once the buffer is reverted."
+  (let ((a (org-generic-id-test--temp-file)))
+    (org-generic-id-test--with-index (list a)
+      (org-generic-id-test--write a 0 "id1")
+      (org-generic-id-test--visiting buf a
+        (org-generic-id-test--update)
+        (org-generic-id-test--write a 60 "id1" "id2")
+        (org-generic-id-test--update)
+        (should-not (org-generic-id-test--location "id2"))
+        (should-not (org-generic-id-test--revert buf))
+        (should (equal (org-generic-id-test--location "id1") a))
+        (should (equal (org-generic-id-test--location "id2") a))))))
+
+(ert-deftest org-generic-id--revert-forgets-removed-ids ()
+  "Reverting a visited file forgets the IDs removed from it on disk."
+  (let ((a (org-generic-id-test--temp-file)))
+    (org-generic-id-test--with-index (list a)
+      (org-generic-id-test--write a 0 "id1" "id2")
+      (org-generic-id-test--visiting buf a
+        (org-generic-id-test--update)
+        (org-generic-id-test--write a 60 "id1")
+        (org-generic-id-test--revert buf)
+        (should (equal (org-generic-id-test--location "id1") a))
+        (should-not (org-generic-id-test--location "id2"))))))
+
+(ert-deftest org-generic-id--revert-records-fingerprint ()
+  "The next update skips a file read when its buffer was reverted."
+  (let ((a (org-generic-id-test--temp-file))
+        (read nil))
+    (org-generic-id-test--counting-reads read
+      (org-generic-id-test--with-index (list a)
+        (org-generic-id-test--write a 0 "id1")
+        (org-generic-id-test--visiting buf a
+          (org-generic-id-test--update)
+          (org-generic-id-test--write a 60 "id2")
+          (org-generic-id-test--revert buf)
+          (should (equal read (list a a)))
+          (setq read nil)
+          (org-generic-id-test--update)
+          (should-not read))))))
+
+(ert-deftest org-generic-id--revert-skips-unchanged-text ()
+  "Reverting a buffer to the text the index last read reads nothing."
+  (let ((a (org-generic-id-test--temp-file))
+        (read nil))
+    (org-generic-id-test--counting-reads read
+      (org-generic-id-test--with-index (list a)
+        (org-generic-id-test--write a 0 "id1")
+        (org-generic-id-test--visiting buf a
+          (org-generic-id-test--update)
+          (setq read nil)
+          (org-generic-id-test--revert buf)
+          (should-not read))))))
+
+(ert-deftest org-generic-id--revert-leaves-duplicates-to-update ()
+  "A duplicate read by a revert is reported by the next update."
+  (let ((a (org-generic-id-test--temp-file)))
+    (org-generic-id-test--with-index (list a)
+      (org-generic-id-test--write a 0 "id1")
+      (org-generic-id-test--visiting buf a
+        (org-generic-id-test--update)
+        (org-generic-id-test--write a 60 "id1" "id1")
+        (should-not (org-generic-id-test--revert buf))
+        (let ((warnings (org-generic-id-test--update)))
+          (should (= (length warnings) 1))
+          (should (string-match-p "1 duplicate :ID:" (car warnings))))))))
+
+(ert-deftest org-generic-id--revert-leaves-duplicates-across-files-to-update ()
+  "A duplicate of an ID held by another file is reported by the next update.
+The other file is read to check that it still holds the ID, which must
+not happen in the reverted buffer."
+  (let ((a (org-generic-id-test--temp-file))
+        (b (org-generic-id-test--temp-file)))
+    (org-generic-id-test--with-index (list a b)
+      (org-generic-id-test--write a 0)
+      (org-generic-id-test--write b 0 "id1")
+      (org-generic-id-test--visiting buf a
+        (org-generic-id-test--update)
+        (org-generic-id-test--write a 60 "id1")
+        (should-not (org-generic-id-test--revert buf))
+        (should (equal (with-current-buffer buf (buffer-string))
+                       (with-temp-buffer
+                         (insert-file-contents a)
+                         (buffer-string))))
+        (let ((warnings (org-generic-id-test--update)))
+          (should (= (length warnings) 1))
+          (should (string-match-p "1 duplicate :ID:" (car warnings))))))))
+
+(ert-deftest org-generic-id--revert-records-moved-id ()
+  "An ID moved into a reverted file from another file is no duplicate."
+  (let ((a (org-generic-id-test--temp-file))
+        (b (org-generic-id-test--temp-file)))
+    (org-generic-id-test--with-index (list a b)
+      (org-generic-id-test--write a 0)
+      (org-generic-id-test--write b 0 "id1")
+      (org-generic-id-test--visiting buf a
+        (org-generic-id-test--update)
+        (org-generic-id-test--write a 60 "id1")
+        (org-generic-id-test--write b 60)
+        (should-not (org-generic-id-test--revert buf))
+        (should (equal (org-generic-id-test--location "id1") a))
+        (should (assoc b (plist-get org-generic-id--file-fingerprints 'ID)))
+        (should-not (org-generic-id-test--update))
+        (should (equal (org-generic-id-test--location "id1") a))))))
+
+(ert-deftest org-generic-id--revert-ignores-untracked-files ()
+  "Reverting a file that updates don't read records nothing."
+  (let ((a (org-generic-id-test--temp-file))
+        (c (org-generic-id-test--temp-file)))
+    (org-generic-id-test--with-index (list a)
+      (org-generic-id-test--write a 0 "id1")
+      (org-generic-id-test--write c 0)
+      (org-generic-id-test--visiting buf c
+        (org-generic-id-test--update)
+        (org-generic-id-test--write c 60 "id9")
+        (org-generic-id-test--revert buf)
+        (should-not (org-generic-id-test--location "id9"))))))
+
+(ert-deftest org-generic-id--find-file-reread-records-ids ()
+  "Visiting a changed file again rereads its buffer, which records its IDs.
+`find-file-noselect' rereads without asking when the file matches
+`revert-without-query'."
+  (let ((a (org-generic-id-test--temp-file)))
+    (org-generic-id-test--with-index (list a)
+      (org-generic-id-test--write a 0 "id1")
+      (org-generic-id-test--visiting buf a
+        (org-generic-id-test--update)
+        (org-generic-id-test--write a 60 "id2")
+        (let ((revert-without-query '(".")))
+          (should (eq (find-file-noselect a) buf)))
+        (should (equal (org-generic-id-test--location "id2") a))
+        (should-not (org-generic-id-test--location "id1"))))))
+
+(ert-deftest org-generic-id--visit-records-ids-changed-since-update ()
+  "Visiting a file that changed since the index read it records its IDs.
+This covers a buffer killed and visited again between two updates."
+  (let ((a (org-generic-id-test--temp-file)))
+    (org-generic-id-test--with-index (list a)
+      (org-generic-id-test--write a 0 "id1")
+      (org-generic-id-test--update)
+      (org-generic-id-test--write a 60 "id2")
+      (org-generic-id-test--visiting buf a
+        (should (string-match-p "id2" (with-current-buffer buf
+                                        (buffer-string))))
+        (should (equal (org-generic-id-test--location "id2") a))
+        (should-not (org-generic-id-test--location "id1"))))))

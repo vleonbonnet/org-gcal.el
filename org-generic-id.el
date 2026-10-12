@@ -231,10 +231,7 @@ than one file."
                     (puthash (or key f) t seen)
                     (push f result)))))))
          (nfiles (length files))
-         (id-regexp
-          (rx-to-string `(seq bol (0+ (any "\t "))
-                          ,(format ":%s:" id-prop)
-                          (1+ " ") (not (any " ")))))
+         (id-regexp (org-generic-id--id-regexp id-prop))
          (prop-key (intern id-prop))
          (old-prints (plist-get org-generic-id--file-fingerprints prop-key))
          (new-prints nil)
@@ -303,6 +300,12 @@ than one file."
              id-prop)
     org-generic-id-locations))
 
+(defun org-generic-id--id-regexp (id-prop)
+  "Return a regexp matching the lines that may set ID-PROP."
+  (rx-to-string `(seq bol (0+ (any "\t "))
+                  ,(format ":%s:" id-prop)
+                  (1+ " ") (not (any " ")))))
+
 (defun org-generic-id--file-fingerprint (file buf)
   "Return the modification time of the text a scan of FILE reads.
 BUF is the buffer visiting FILE, or nil.  The scan reads BUF when it is
@@ -365,7 +368,8 @@ resolved.")
   "Record the IDs found by a scan for ID-PROP in `org-generic-id-locations'.
 SCANNED lists (FILE . IDS) for each file read, in scan order, and
 UNCHANGED the files skipped because their text did not change since
-they were last read.  TRUENAME maps a file name to its true name.
+they were last read, or t if every file not in SCANNED is unchanged.
+TRUENAME maps a file name to its true name.
 Forget the IDs recorded for the files in SCANNED, then map each of
 their IDs to its file; for an ID found more than once, the last file
 wins.
@@ -387,8 +391,9 @@ Must be called with an Org buffer current that may be overwritten."
         (ndup 0))
     (dolist (s scanned)
       (puthash (funcall truename (car s)) t rescanned))
-    (dolist (file unchanged)
-      (puthash (funcall truename file) t kept))
+    (unless (eq unchanged t)
+      (dolist (file unchanged)
+        (puthash (funcall truename file) t kept)))
     ;; Compare true names: an ID may have been recorded under another
     ;; name for the same file, e.g. by `org-generic-id-add-location'.
     (maphash (lambda (id file)
@@ -405,7 +410,10 @@ Must be called with an Org buffer current that may be overwritten."
                       ;; buffer was reverted after the ID was added, so
                       ;; check the unchanged file still holds the ID.
                       (and other
-                           (gethash (funcall truename other) kept)
+                           (let ((other-true (funcall truename other)))
+                             (if (eq unchanged t)
+                                 (not (gethash other-true rescanned))
+                               (gethash other-true kept)))
                            (org-generic-id--file-holds-id-p other id-prop id)
                            (funcall truename other)))))
             (when twin
@@ -430,6 +438,111 @@ Must be called with an Org buffer current that may be overwritten."
                    (cl-incf ndup)))))
              seen)
     (cons ndup dup-files)))
+
+(defun org-generic-id--tracked-name (id-prop file)
+  "Return the name under which the index for ID-PROP tracks FILE, or nil.
+The index tracks the files the last update read or skipped as unchanged,
+and the files it records an ID in."
+  (let ((names (org-generic-id--make-hash-table))
+        (table (gethash id-prop org-generic-id-locations)))
+    (dolist (print (plist-get org-generic-id--file-fingerprints
+                              (intern id-prop)))
+      (puthash (car print) t names))
+    (when table
+      (maphash (lambda (_id name) (puthash name t names)) table))
+    (if (gethash file names)
+        file
+      ;; FILE may be tracked under another name for the same file.
+      (let ((base (file-name-nondirectory file))
+            (true (ignore-errors (file-truename file))))
+        (catch 'found
+          (maphash
+           (lambda (name _)
+             (when (and true
+                        (eq t (compare-strings
+                               base nil nil
+                               (file-name-nondirectory name) nil nil t))
+                        (equal (ignore-errors (file-truename name)) true))
+               (throw 'found name)))
+           names)
+          nil)))))
+
+(defun org-generic-id--recorded-ids (id-prop file truename)
+  "Return the sorted IDs that the index for ID-PROP records in FILE.
+TRUENAME maps a file name to its true name."
+  (let ((true (funcall truename file))
+        ids)
+    (when-let* ((table (gethash id-prop org-generic-id-locations)))
+      (maphash (lambda (id name)
+                 (when (equal (funcall truename name) true)
+                   (push id ids)))
+               table))
+    (sort ids #'string<)))
+
+(defun org-generic-id--update-file (id-prop file buf)
+  "Record the values of ID-PROP that FILE holds now.
+FILE is the name under which the index tracks the file, and BUF the
+buffer visiting it.  This is `org-generic-id-update-id-locations' for
+one file: the other files count as unchanged, and duplicates are left
+for that function to report.  Return non-nil if the IDs recorded in
+FILE changed."
+  (let* ((truename (org-generic-id--truename-function))
+         (prop-key (intern id-prop))
+         (before (org-generic-id--recorded-ids id-prop file truename))
+         (ids (org-generic-id--file-ids
+               file buf id-prop (org-generic-id--id-regexp id-prop)))
+         ;; Checking that another file holds an ID may read that file into
+         ;; the current buffer, so make it a temporary one.
+         (dup-files
+          (with-temp-buffer
+            (delay-mode-hooks
+              (org-mode)
+              (cdr (org-generic-id--record-scan
+                    id-prop (list (cons file ids)) t t truename)))))
+         ;; Files holding a duplicated ID lose their fingerprint so that the
+         ;; next update reads them, and reports the duplicate.
+         (prints (cl-remove-if
+                  (lambda (print)
+                    (or (equal (car print) file)
+                        (gethash (funcall truename (car print)) dup-files)))
+                  (plist-get org-generic-id--file-fingerprints prop-key)))
+         (print (unless (gethash (funcall truename file) dup-files)
+                  (org-generic-id--file-fingerprint file buf))))
+    (when print
+      (push (cons file print) prints))
+    (setq org-generic-id--file-fingerprints
+          (plist-put org-generic-id--file-fingerprints prop-key prints))
+    (not (equal before (org-generic-id--recorded-ids id-prop file truename)))))
+
+(defun org-generic-id--update-visited-file ()
+  "Record the IDs of the file visited by the current buffer.
+Do so for each ID property indexed, if the index tracks the file and
+last read other text from it.  Run when a buffer reads its file, by
+reverting it or visiting it again: the update at the start of an
+operation such as a sync has not seen that text, so IDs that another
+program added to the file would be missing from the index until the
+next update."
+  (let ((buf (or (buffer-base-buffer) (current-buffer))))
+    (when-let* (((hash-table-p org-generic-id-locations))
+                (fname (buffer-file-name buf))
+                ((with-current-buffer buf (derived-mode-p 'org-mode))))
+      (with-demoted-errors "org-generic-id: recording IDs of a reread file: %S"
+        (let ((file (abbreviate-file-name fname))
+              changed)
+          (maphash
+           (lambda (id-prop _)
+             (when-let* ((name (org-generic-id--tracked-name id-prop file))
+                         ((not (equal
+                                (org-generic-id--file-fingerprint name buf)
+                                (cdr (assoc name
+                                            (plist-get
+                                             org-generic-id--file-fingerprints
+                                             (intern id-prop))))))))
+               (when (org-generic-id--update-file id-prop name buf)
+                 (setq changed t))))
+           org-generic-id-locations)
+          (when changed
+            (org-generic-id-locations-save)))))))
 
 (defun org-generic-id-locations-save ()
   "Save `org-generic-id-locations' in `org-generic-id-locations-file'."
@@ -610,9 +723,12 @@ FILE-TO-BUF, whose format is documented at ‘org-generic-id--files’."
         buf))))
 
 (defun org-generic-id--files-find-file-hook ()
-  "Update ‘org-generic-id--files’ after a file is loaded."
+  "Update ‘org-generic-id--files’ after a file is loaded.
+Also record the IDs the file holds if they may have changed since the
+index last read it."
   (org-generic-id--files-buffer-hook-impl
-   org-generic-id--files (buffer-file-name) (current-buffer)))
+   org-generic-id--files (buffer-file-name) (current-buffer))
+  (org-generic-id--update-visited-file))
 
 (defun org-generic-id--files-kill-buffer-hook ()
   "Update ‘org-generic-id--files’ after a buffer is killed."
@@ -630,6 +746,7 @@ FILE-TO-BUF has a format like ‘org-generic-id--files’."
 
 (add-hook 'find-file-hook #'org-generic-id--files-find-file-hook)
 (add-hook 'kill-buffer-hook #'org-generic-id--files-kill-buffer-hook)
+(add-hook 'after-revert-hook #'org-generic-id--update-visited-file)
 
 
 (unless (featurep 'org-generic-id)

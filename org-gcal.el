@@ -1427,40 +1427,43 @@ Does not preserve point."
 The return value is a cons cell (file-name . position), or nil
 if there is no entry with that ID.
 With optional argument MARKERP, return the position as a new marker."
-  (or
-   (org-generic-id-find org-gcal-entry-id-property id markerp
-                        'cached)
-   ;; Fallback for legacy "ID" property. Don't use 'org-id-find' directly
-   ;; because it always run 'org-id-update-id-locations' if the ID isn't found,
-   ;; which slows us down considerably, and tries to fall back to the current
-   ;; buffer, which we don't want either.
-   (when-let* ((file (org-gcal--find-id-file id)))
-     (org-id-find-id-in-file id file markerp))
-   ;; Last-chance direct search of the current buffer.  A stale
-   ;; id-locations entry mapping ID to the wrong file wins the `or'
-   ;; inside `org-generic-id-find-id-file', so its current-buffer
-   ;; fallback never runs and the lookup above returns nil even when
-   ;; the heading sits in this very buffer.  During a fetch the current
-   ;; buffer is the calendar file, and a nil here makes the fetch loop
-   ;; insert a duplicate heading for a re-delivered event — search the
-   ;; buffer text before concluding the entry is absent.
-   (when (derived-mode-p 'org-mode)
-     (when-let* ((file (buffer-file-name
-                        (or (buffer-base-buffer) (current-buffer))))
-                 (pos (org-with-wide-buffer
-                       (org-find-property org-gcal-entry-id-property id))))
-       (if markerp
-           (move-marker (make-marker) pos (current-buffer))
-         (cons file pos))))
-   ;; The index records ID in a file that no longer holds it: the entry
-   ;; moved after the last scan.  Rescan changed files and look again
-   ;; before reporting it missing, since a fetch inserts a new heading for
-   ;; a missing entry.
-   (when (org-generic-id-find-id-file org-gcal-entry-id-property id
-                                      'no-fallback)
-     (org-generic-id-update-id-locations org-gcal-entry-id-property nil
-                                         'silent)
-     (org-generic-id-find org-gcal-entry-id-property id markerp 'cached))))
+  ;; Read before the lookup: visiting the recorded file to look for ID
+  ;; records its IDs again, which forgets ID there if it moved.
+  (let ((recorded (org-generic-id-find-id-file org-gcal-entry-id-property id
+                                               'no-fallback)))
+    (or
+     (org-generic-id-find org-gcal-entry-id-property id markerp
+                          'cached)
+     ;; Fallback for legacy "ID" property. Don't use 'org-id-find' directly
+     ;; because it always run 'org-id-update-id-locations' if the ID isn't found,
+     ;; which slows us down considerably, and tries to fall back to the current
+     ;; buffer, which we don't want either.
+     (when-let* ((file (org-gcal--find-id-file id)))
+       (org-id-find-id-in-file id file markerp))
+     ;; Last-chance direct search of the current buffer.  A stale
+     ;; id-locations entry mapping ID to the wrong file wins the `or'
+     ;; inside `org-generic-id-find-id-file', so its current-buffer
+     ;; fallback never runs and the lookup above returns nil even when
+     ;; the heading sits in this very buffer.  During a fetch the current
+     ;; buffer is the calendar file, and a nil here makes the fetch loop
+     ;; insert a duplicate heading for a re-delivered event — search the
+     ;; buffer text before concluding the entry is absent.
+     (when (derived-mode-p 'org-mode)
+       (when-let* ((file (buffer-file-name
+                          (or (buffer-base-buffer) (current-buffer))))
+                   (pos (org-with-wide-buffer
+                         (org-find-property org-gcal-entry-id-property id))))
+         (if markerp
+             (move-marker (make-marker) pos (current-buffer))
+           (cons file pos))))
+     ;; The index records ID in a file that no longer holds it: the entry
+     ;; moved after the last scan.  Rescan changed files and look again
+     ;; before reporting it missing, since a fetch inserts a new heading for
+     ;; a missing entry.
+     (when recorded
+       (org-generic-id-update-id-locations org-gcal-entry-id-property nil
+                                           'silent)
+       (org-generic-id-find org-gcal-entry-id-property id markerp 'cached)))))
 
 (defun org-gcal--find-id-file (id)
   "Query the id database for the file in which this ID is located.
