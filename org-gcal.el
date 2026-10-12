@@ -522,9 +522,12 @@ SKIP-EXPORT.  Set SILENT to non-nil to inhibit notifications."
   (interactive)
   (when org-gcal--sync-lock
     (user-error "org-gcal sync locked. If a previous sync has failed, call 'org-gcal--sync-unlock' to reset the lock and try again."))
+  ;; Index entries refiled or edited since the last sync before fetching:
+  ;; `org-gcal--id-find' trusts the index, so a stale one hides existing
+  ;; entries and a fetched event is inserted again as a duplicate.  Scan
+  ;; before taking the lock so a scan error can't leave it held.
+  (org-generic-id-update-id-locations org-gcal-entry-id-property)
   (org-gcal--sync-lock)
-  ;; Don't scan upfront — org-generic-id-find auto-updates on cache miss,
-  ;; and we do a full scan after fetching (before sync-buffer phase).
   (when org-gcal-auto-archive
     (dolist (i org-gcal-fetch-file-alist)
       (with-current-buffer
@@ -1441,7 +1444,16 @@ With optional argument MARKERP, return the position as a new marker."
                        (org-find-property org-gcal-entry-id-property id))))
        (if markerp
            (move-marker (make-marker) pos (current-buffer))
-         (cons file pos))))))
+         (cons file pos))))
+   ;; The index records ID in a file that no longer holds it: the entry
+   ;; moved after the last scan.  Rescan changed files and look again
+   ;; before reporting it missing, since a fetch inserts a new heading for
+   ;; a missing entry.
+   (when (org-generic-id-find-id-file org-gcal-entry-id-property id
+                                      'no-fallback)
+     (org-generic-id-update-id-locations org-gcal-entry-id-property nil
+                                         'silent)
+     (org-generic-id-find org-gcal-entry-id-property id markerp 'cached))))
 
 (defun org-gcal--find-id-file (id)
   "Query the id database for the file in which this ID is located.
@@ -1478,7 +1490,8 @@ This will also update the stored ID locations using
     (org-gcal--back-to-heading)
     (let ((entry-id (org-gcal--format-entry-id calendar-id event-id)))
       (org-entry-put (point) org-gcal-entry-id-property entry-id)
-      (when-let* ((fname (buffer-file-name)))
+      ;; Indirect buffers, such as org-capture's, visit no file themselves.
+      (when-let* ((fname (buffer-file-name (buffer-base-buffer))))
         (org-generic-id-add-location org-gcal-entry-id-property entry-id
                                      fname)))))
 

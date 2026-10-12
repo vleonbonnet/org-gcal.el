@@ -708,6 +708,110 @@ entry after its cached marker went stale, is stubbed to return REFOUND."
         (org-gcal-test--stale-marker "* My event summary\n")
       (point))))
 
+;;; Entry ID index
+
+(defun org-gcal-test--write-entry-file (file seconds &optional entry-id)
+  "Write FILE, holding an entry with ENTRY-ID if non-nil.
+Set FILE's modification time to SECONDS after a fixed base time."
+  (with-temp-file file
+    (when entry-id
+      (insert "* My event summary\n:PROPERTIES:\n:entry-id: " entry-id
+              "\n:END:\n")))
+  (set-file-times file (time-add (seconds-to-time 1767268800) seconds)))
+
+(ert-deftest org-gcal-test--id-find-rescans-stale-index ()
+  "Verify `org-gcal--id-find' rescans when the index records a moved entry.
+Refiling an entry after the last scan leaves the index recording the
+file it left; a fetch must still find the entry, or it inserts a
+duplicate."
+  (let* ((entry-id "foobar1234/foo@foobar.com")
+         (old (abbreviate-file-name
+               (file-truename (make-temp-file "old." nil ".org"))))
+         (new (abbreviate-file-name
+               (file-truename (make-temp-file "new." nil ".org"))))
+         (org-generic-id-locations (org-generic-id--make-hash-table))
+         (org-generic-id--file-fingerprints nil)
+         (org-generic-id-locations-file
+          (make-temp-file "org-generic-id-locations."))
+         (org-agenda-files (list old new))
+         (org-generic-id-extra-files nil)
+         (org-generic-id-search-archives nil)
+         (org-id-locations (make-hash-table :test #'equal)))
+    (org-gcal-test--write-entry-file old 0 entry-id)
+    (org-gcal-test--write-entry-file new 0)
+    (org-generic-id-update-id-locations org-gcal-entry-id-property nil t)
+    (should (equal (org-generic-id-find-id-file org-gcal-entry-id-property
+                                                entry-id t)
+                   old))
+    ;; Refile the entry from OLD to NEW.
+    (org-gcal-test--write-entry-file old 60)
+    (org-gcal-test--write-entry-file new 60 entry-id)
+    ;; Fetches run in the calendar file, which no longer holds the entry.
+    (org-gcal-test--with-temp-buffer ""
+      (should (equal (org-gcal--id-find entry-id) (cons new 1))))))
+
+(ert-deftest org-gcal-test--put-id-indirect-buffer ()
+  "Verify `org-gcal--put-id' indexes the file of an indirect buffer's base.
+Org capture edits its target file through an indirect buffer."
+  (let* ((base (find-file-noselect (make-temp-file "capture." nil ".org")))
+         (file (buffer-file-name base))
+         (added nil))
+    (unwind-protect
+        (let ((indirect (make-indirect-buffer
+                         base (generate-new-buffer-name "*capture*") t)))
+          (unwind-protect
+              (with-current-buffer indirect
+                (insert "* My event summary\n")
+                (cl-letf (((symbol-function 'org-generic-id-add-location)
+                           (lambda (&rest args) (push args added))))
+                  (org-gcal--put-id (point-min) org-gcal-test-calendar-id
+                                    "foobar1234")))
+            (kill-buffer indirect)))
+      (with-current-buffer base (set-buffer-modified-p nil))
+      (kill-buffer base))
+    (should (equal added
+                   `((,org-gcal-entry-id-property "foobar1234/foo@foobar.com"
+                                                  ,file))))))
+
+(defmacro org-gcal-test--with-stubbed-sync (calls &rest body)
+  "Run BODY with the ID scan and calendar fetch of a sync stubbed.
+The stubs push `scan' and `fetch' onto CALLS as they run."
+  (declare (indent 1) (debug t))
+  `(let ((org-gcal-fetch-file-alist
+          (list (cons org-gcal-test-calendar-id
+                      (make-temp-file "calendar." nil ".org"))))
+         (org-gcal-auto-archive nil)
+         (org-gcal--sync-lock nil))
+     (cl-letf (((symbol-function 'org-generic-id-update-id-locations)
+                (lambda (&rest _) (push 'scan ,calls)))
+               ((symbol-function 'org-generic-id-files) #'ignore)
+               ((symbol-function 'org-gcal--sync-calendar)
+                (lambda (&rest _)
+                  (push 'fetch ,calls)
+                  (deferred:succeed nil))))
+       ,@body)))
+
+(ert-deftest org-gcal-test--sync-scans-index-before-fetching ()
+  "Verify `org-gcal-sync' updates the entry ID index before fetching.
+Entries refiled since the last sync are otherwise looked up in the files
+they left."
+  (let ((calls nil))
+    (org-gcal-test--with-stubbed-sync calls
+      (org-gcal-sync t t)
+      (deferred:flush-queue!)
+      (should-not org-gcal--sync-lock))
+    (should (equal (reverse calls) '(scan fetch scan)))))
+
+(ert-deftest org-gcal-test--sync-scan-error-releases-lock ()
+  "Verify a failed ID scan leaves the sync lock free."
+  (let ((calls nil))
+    (org-gcal-test--with-stubbed-sync calls
+      (cl-letf (((symbol-function 'org-generic-id-update-id-locations)
+                 (lambda (&rest _) (error "Scan failed"))))
+        (should-error (org-gcal-sync t t)))
+      (should-not org-gcal--sync-lock))
+    (should-not calls)))
+
 (ert-deftest org-gcal-test--post-at-point-api-response ()
   "Verify that ‘org-gcal-post-to-point’ updates an event using the data
 returned from the Google Calendar API."
