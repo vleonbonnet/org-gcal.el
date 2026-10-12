@@ -150,3 +150,193 @@
         (setq m (org-generic-id-find "SN" "sn2"))
         (should (equal m
                        `(,org-file . 78)))))))
+
+;;; Incremental updates
+
+(defconst org-generic-id-test--time (seconds-to-time 1767268800)
+  "Base modification time for files written by the update tests.")
+
+(defmacro org-generic-id-test--with-index (files &rest body)
+  "Run BODY with an empty ID index scanning only FILES.
+FILES is evaluated to a list of file names, used as the agenda files."
+  (declare (indent 1) (debug t))
+  `(let ((org-generic-id-locations (org-generic-id--make-hash-table))
+         (org-generic-id--file-fingerprints nil)
+         (org-generic-id--reported-duplicates (org-generic-id--make-hash-table))
+         (org-generic-id-locations-file
+          (make-temp-file "org-generic-id-locations."))
+         (org-agenda-files ,files)
+         (org-generic-id-extra-files nil)
+         (org-generic-id-search-archives nil))
+     ,@body))
+
+(defun org-generic-id-test--temp-file ()
+  "Return the name of a new empty Org file, as the ID scan names it."
+  ;; `file-truename' resolves symlinks such as /var -> /private/var on macOS.
+  (abbreviate-file-name (file-truename (make-temp-file "my.org." nil ".org"))))
+
+(defun org-generic-id-test--write (file seconds &rest ids)
+  "Write an entry for each of IDS to FILE, modified SECONDS after the base time.
+Each entry sets the ID property to its ID."
+  (with-temp-file file
+    (dolist (id ids)
+      (insert (format "* %s\n:PROPERTIES:\n:ID: %s\n:END:\n" id id))))
+  (set-file-times file (time-add org-generic-id-test--time seconds)))
+
+(defun org-generic-id-test--location (id)
+  "Return the file the index records for ID."
+  (gethash id (gethash "ID" org-generic-id-locations)))
+
+(defun org-generic-id-test--update ()
+  "Update the ID index and return the warnings it raised."
+  (let (warnings)
+    (cl-letf (((symbol-function 'warn)
+               (lambda (format-string &rest args)
+                 (push (apply #'format format-string args) warnings))))
+      (org-generic-id-update-id-locations "ID"))
+    warnings))
+
+(ert-deftest org-generic-id--update-forgets-moved-ids ()
+  "IDs deleted or moved out of a reread file are no longer recorded in it."
+  (let ((a (org-generic-id-test--temp-file))
+        (b (org-generic-id-test--temp-file)))
+    (org-generic-id-test--with-index (list a b)
+      (org-generic-id-test--write a 0 "id1" "id2")
+      (org-generic-id-test--write b 0)
+      (org-generic-id-test--update)
+      (should (equal (org-generic-id-test--location "id1") a))
+      (should (equal (org-generic-id-test--location "id2") a))
+      ;; Refile id1 to b and delete id2.
+      (org-generic-id-test--write a 60)
+      (org-generic-id-test--write b 60 "id1")
+      (org-generic-id-test--update)
+      (should (equal (org-generic-id-test--location "id1") b))
+      (should-not (org-generic-id-test--location "id2")))))
+
+(ert-deftest org-generic-id--update-rereads-file-with-older-modtime ()
+  "A file is reread when its modification time changes, even backwards.
+A file written from another machine can carry a modification time
+behind the clock of the machine scanning it."
+  (let ((a (org-generic-id-test--temp-file)))
+    (org-generic-id-test--with-index (list a)
+      (org-generic-id-test--write a 0 "id1")
+      (org-generic-id-test--update)
+      (org-generic-id-test--write a -3600 "id2")
+      (org-generic-id-test--update)
+      (should (equal (org-generic-id-test--location "id2") a))
+      (should-not (org-generic-id-test--location "id1")))))
+
+(ert-deftest org-generic-id--update-skips-unchanged-files ()
+  "Files whose text did not change since they were last read are skipped."
+  (let ((a (org-generic-id-test--temp-file))
+        (b (org-generic-id-test--temp-file))
+        (file-ids (symbol-function 'org-generic-id--file-ids))
+        (read nil))
+    (cl-letf (((symbol-function 'org-generic-id--file-ids)
+               (lambda (file &rest args)
+                 (push file read)
+                 (apply file-ids file args))))
+      (org-generic-id-test--with-index (list a b)
+        (org-generic-id-test--write a 0 "id1")
+        (org-generic-id-test--write b 0 "id2")
+        (org-generic-id-test--update)
+        (should (equal (sort read #'string<) (sort (list a b) #'string<)))
+        (setq read nil)
+        (org-generic-id-test--update)
+        (should-not read)
+        (org-generic-id-test--write b 60 "id2" "id3")
+        (org-generic-id-test--update)
+        (should (equal read (list b)))
+        (should (equal (org-generic-id-test--location "id1") a))
+        (should (equal (org-generic-id-test--location "id3") b))))))
+
+(ert-deftest org-generic-id--update-reads-unsaved-changes ()
+  "A buffer with unsaved changes is read, and reread once saved."
+  (let* ((a (org-generic-id-test--temp-file))
+         (buf (find-file-noselect a)))
+    (unwind-protect
+        (org-generic-id-test--with-index (list a)
+          (with-current-buffer buf
+            (insert "* id1\n:PROPERTIES:\n:ID: id1\n:END:\n"))
+          (org-generic-id-test--update)
+          (should (equal (org-generic-id-test--location "id1") a))
+          (with-current-buffer buf
+            (erase-buffer)
+            (insert "* id2\n:PROPERTIES:\n:ID: id2\n:END:\n")
+            (save-buffer))
+          (org-generic-id-test--update)
+          (should (equal (org-generic-id-test--location "id2") a))
+          (should-not (org-generic-id-test--location "id1")))
+      (with-current-buffer buf (set-buffer-modified-p nil))
+      (kill-buffer buf))))
+
+(ert-deftest org-generic-id--update-reports-duplicates-across-updates ()
+  "An ID read from a changed file is a duplicate if an unchanged file holds it."
+  (let ((a (org-generic-id-test--temp-file))
+        (b (org-generic-id-test--temp-file)))
+    (org-generic-id-test--with-index (list a b)
+      (org-generic-id-test--write a 0 "id1")
+      (org-generic-id-test--write b 0)
+      (should-not (org-generic-id-test--update))
+      (org-generic-id-test--write b 60 "id1")
+      (let ((warnings (org-generic-id-test--update)))
+        (should (= (length warnings) 1))
+        (should (string-match-p "1 duplicate :ID:" (car warnings)))))))
+
+(ert-deftest org-generic-id--update-ignores-stale-record-for-duplicates ()
+  "An ID recorded in an unchanged file that no longer holds it is no duplicate.
+This happens when a buffer is reverted after an ID was added to it."
+  (let ((a (org-generic-id-test--temp-file))
+        (b (org-generic-id-test--temp-file)))
+    (org-generic-id-test--with-index (list a b)
+      (org-generic-id-test--write a 0)
+      (org-generic-id-test--write b 0)
+      (org-generic-id-test--update)
+      (org-generic-id-add-location "ID" "id1" a)
+      (org-generic-id-test--write b 60 "id1")
+      (should-not (org-generic-id-test--update))
+      (should (equal (org-generic-id-test--location "id1") b)))))
+
+(ert-deftest org-generic-id--update-keeps-duplicate-after-removing-copy ()
+  "Removing the recorded copy of a duplicated ID records the remaining one.
+The index records one file per ID, so the other file must be read again
+even though it did not change."
+  (let ((a (org-generic-id-test--temp-file))
+        (b (org-generic-id-test--temp-file)))
+    (org-generic-id-test--with-index (list a b)
+      (org-generic-id-test--write a 0 "id1")
+      (org-generic-id-test--write b 0 "id1")
+      (org-generic-id-test--update)
+      (should (equal (org-generic-id-test--location "id1") b))
+      (org-generic-id-test--write b 60)
+      (org-generic-id-test--update)
+      (should (equal (org-generic-id-test--location "id1") a)))))
+
+(ert-deftest org-generic-id--update-keeps-duplicate-across-updates-after-removing-copy ()
+  "Same as the test above, for a duplicate found across two updates."
+  (let ((a (org-generic-id-test--temp-file))
+        (b (org-generic-id-test--temp-file)))
+    (org-generic-id-test--with-index (list a b)
+      (org-generic-id-test--write a 0 "id1")
+      (org-generic-id-test--write b 0)
+      (org-generic-id-test--update)
+      (org-generic-id-test--write b 60 "id1")
+      (org-generic-id-test--update)
+      (should (equal (org-generic-id-test--location "id1") b))
+      (org-generic-id-test--write b 120)
+      (org-generic-id-test--update)
+      (should (equal (org-generic-id-test--location "id1") a)))))
+
+(ert-deftest org-generic-id--update-reports-duplicate-once ()
+  "A duplicate is reported once, and again only if it recurs once resolved."
+  (let ((a (org-generic-id-test--temp-file))
+        (b (org-generic-id-test--temp-file)))
+    (org-generic-id-test--with-index (list a b)
+      (org-generic-id-test--write a 0 "id1")
+      (org-generic-id-test--write b 0 "id1")
+      (should (= (length (org-generic-id-test--update)) 1))
+      (should-not (org-generic-id-test--update))
+      (org-generic-id-test--write b 60)
+      (should-not (org-generic-id-test--update))
+      (org-generic-id-test--write b 120 "id1")
+      (should (= (length (org-generic-id-test--update)) 1)))))

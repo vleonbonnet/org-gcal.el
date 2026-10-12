@@ -525,11 +525,15 @@ You get an error like this:
   Duplicate ID "FOO", also in file BAR
 #+END_EXAMPLE
 
-Most likely, this means some calendar events were mistakenly retrieved twice
-(for example, if you ran =org-gcal-fetch= on different computers). Search your
-Org-mode files for the duplicate ID "FOO" and delete one of the headlines with
-duplicate IDs (or just change the =ID= property on one of the events to
-something else).
+Most likely, this means some calendar events were mistakenly retrieved twice (for example, if you ran =org-gcal-fetch= on different computers). Search your Org-mode files for the duplicate ID "FOO" and delete one of the headlines with duplicate IDs (or just change the =ID= property on one of the events to something else).
+
+For the =entry-id= property, a sync reports duplicates with a warning like this:
+
+#+BEGIN_EXAMPLE
+  WARNING: 1 duplicate :entry-id: properties found, check *Messages* buffer
+#+END_EXAMPLE
+
+=*Messages*= lists each duplicate as =Duplicate :entry-id: property "ID"=. Each duplicate is reported once per Emacs session, and again only if it recurs after it was resolved. Delete one of the two headlines; the other is updated by later syncs.
 
 
 * Similar applications

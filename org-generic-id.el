@@ -106,11 +106,14 @@ they would otherwise be garbage collected (after being killed, for example).")
     res))
 
 (persist-defvar
-  org-generic-id--last-update-id-time nil
-  "Time at which ‘org-generic-id-update-id-locations’ last completed.
+  org-generic-id--file-fingerprints nil
+  "Modification times of files as of their last scan for IDs.
 
-This is a plist mapping each ID-PROP to the last time that ID-PROP was updated.
-For documentation on ID-PROP see ‘org-generic-id-find’.")
+This is a plist mapping each ID-PROP, as a symbol, to an alist of
+\(FILE . MODTIME).  ‘org-generic-id-update-id-locations’ reads a file
+again only when its modification time differs from the one recorded
+here, so a file without an entry is always read.  For documentation on
+ID-PROP see ‘org-generic-id-find’.")
 
 (defcustom org-generic-id-extra-files 'org-agenda-text-search-extra-files
   "Files to be searched for IDs, besides the agenda files.
@@ -187,7 +190,17 @@ locations. This behavior can be disabled with NO-FALLBACK."
 Store the relation between files and corresponding IDs.
 This will scan all agenda files, all associated archives, and all
 files currently mentioned in `org-generic-id-locations'.
-When FILES is given, scan also these files."
+When FILES is given, scan also these files.
+
+A file is read only when its text may have changed since it was last
+read: its buffer has unsaved changes, or its modification time differs
+from the one recorded then.  The IDs recorded for a file that is read
+are replaced by the ones it now holds, so IDs deleted or moved out of
+it are forgotten.  Files holding an ID that is also in another file are
+read every time, until the duplicate is resolved.
+
+Unless SILENT, report progress, and report once each ID found in more
+than one file."
   (interactive "sID Property: ")
   (let* ((files
           (let ((raw (delete-dups
@@ -222,8 +235,16 @@ When FILES is given, scan also these files."
           (rx-to-string `(seq bol (0+ (any "\t "))
                           ,(format ":%s:" id-prop)
                           (1+ " ") (not (any " ")))))
-         (seen-ids nil)
+         (prop-key (intern id-prop))
+         (old-prints (plist-get org-generic-id--file-fingerprints prop-key))
+         (new-prints nil)
+         ;; (FILE . IDS) for each file read, and the files skipped as
+         ;; unchanged since they were last read.
+         (scanned nil)
+         (unchanged nil)
+         (truename (org-generic-id--truename-function))
          (ndup 0)
+         (dup-files nil)
          (i 0))
     (unless (gethash id-prop org-generic-id-locations)
       (puthash id-prop (org-generic-id--make-hash-table) org-generic-id-locations))
@@ -232,49 +253,46 @@ When FILES is given, scan also these files."
         (org-mode)
         (dolist (file files)
           (condition-case err
-              (when-let*
-                  ((file
-                    (car-safe
-                     (org-generic-id-files-modified-since-modtime
-                      (org-generic-id--last-update-id-time-get id-prop)
-                      (list file)
-                      org-generic-id--files))))
-                (unless silent
-                  (cl-incf i)
-                  (message "Finding :%s: locations (%d/%d files): %s"
-                           id-prop i nfiles file))
-                (goto-char (point-min))
-                (let ((buf
-                       (org-generic-id--get-file-to-buf
-                        org-generic-id--files file)))
-                  (save-excursion
-                    (if (and buf (buffer-live-p buf))
-                        (set-buffer buf)
-                      (insert-file-contents file nil nil nil 'replace))
-                    (save-restriction
-                      (widen)
-                      (goto-char (point-min))
-                      (let ((ids nil)
-                            (case-fold-search t))
-                        (while (re-search-forward id-regexp nil t)
-                          (when (org-at-property-p)
-                            (push (org-entry-get (point) id-prop) ids)))
-                        (dolist (id ids)
-                          (cond
-                           ((not (member id seen-ids))
-                            (push id seen-ids)
-                            (puthash id file (gethash id-prop org-generic-id-locations)))
-                           (silent nil)
-                           (t
-                            (message "Duplicate :%s: property %S" id-prop id)
-                            (cl-incf ndup)))))))))
+              (when (file-exists-p file)
+                (let* ((buf (org-generic-id--get-file-to-buf
+                             org-generic-id--files file))
+                       (buf (and buf (buffer-live-p buf) buf))
+                       (print (org-generic-id--file-fingerprint file buf)))
+                  (if (and print (equal print (cdr (assoc file old-prints))))
+                      (progn
+                        (push (cons file print) new-prints)
+                        (push file unchanged))
+                    (cl-incf i)
+                    (unless silent
+                      (message "Finding :%s: locations (%d/%d files): %s"
+                               id-prop i nfiles file))
+                    (push (cons file (org-generic-id--file-ids
+                                      file buf id-prop id-regexp))
+                          scanned)
+                    ;; A buffer with unsaved changes gets no fingerprint, so
+                    ;; it is read again once saved or reverted.
+                    (when print
+                      (push (cons file print) new-prints)))))
             (file-error
              (warn "org-generic-id-update-id-locations: file “%s”: %S"
-                   file err))))))
+                   file err))))
+        (let ((result (org-generic-id--record-scan
+                       id-prop (nreverse scanned) unchanged silent truename)))
+          (setq ndup (car result)
+                dup-files (cdr result)))))
+    ;; Files holding a duplicated ID are read by every update until the
+    ;; duplicate is resolved: the index records one file per ID, so once
+    ;; that file drops the ID, the others must be read to record it again.
+    (when (> (hash-table-count dup-files) 0)
+      (setq new-prints
+            (cl-remove-if (lambda (print)
+                            (gethash (funcall truename (car print)) dup-files))
+                          new-prints)))
+    (setq org-generic-id--file-fingerprints
+          (plist-put org-generic-id--file-fingerprints prop-key new-prints))
     ;; Save the new locations and reload to regenerate variables.
     (org-generic-id-locations-save)
     (org-generic-id-locations-load)
-    (org-generic-id--last-update-id-time-put id-prop (current-time))
     (when (and (not silent) (> ndup 0))
       (warn
        "WARNING: %d duplicate :%s: properties found, check *Messages* buffer"
@@ -284,6 +302,134 @@ When FILES is given, scan also these files."
              (hash-table-count (gethash id-prop org-generic-id-locations))
              id-prop)
     org-generic-id-locations))
+
+(defun org-generic-id--file-fingerprint (file buf)
+  "Return the modification time of the text a scan of FILE reads.
+BUF is the buffer visiting FILE, or nil.  The scan reads BUF when it is
+non-nil, so this is the modification time BUF last synced with FILE,
+even if FILE has changed on disk since.  Return nil when BUF has unsaved
+changes, as its text then matches no modification time."
+  (cond
+   ((null buf)
+    (file-attribute-modification-time (file-attributes file)))
+   ((buffer-modified-p buf) nil)
+   (t (with-current-buffer buf (visited-file-modtime)))))
+
+(defun org-generic-id--file-ids (file buf id-prop id-regexp)
+  "Return the values of ID-PROP set in FILE, in buffer order.
+Read BUF, the buffer visiting FILE, if non-nil, so unsaved changes
+count; otherwise read FILE into the current buffer.  ID-REGEXP matches
+the lines that may set ID-PROP."
+  (save-excursion
+    (if buf
+        (set-buffer buf)
+      (insert-file-contents file nil nil nil 'replace))
+    (save-restriction
+      (widen)
+      (goto-char (point-min))
+      (let ((case-fold-search t)
+            ids)
+        (while (re-search-forward id-regexp nil t)
+          (when-let* (((org-at-property-p))
+                      (id (org-entry-get (point) id-prop)))
+            (push id ids)))
+        (nreverse ids)))))
+
+(defun org-generic-id--file-holds-id-p (file id-prop id)
+  "Return non-nil if an entry in FILE sets ID-PROP to ID.
+Read the buffer visiting FILE if any, otherwise read FILE into the
+current buffer."
+  (let ((buf (org-generic-id--get-file-to-buf org-generic-id--files file)))
+    (ignore-errors
+      (save-excursion
+        (if (and buf (buffer-live-p buf))
+            (set-buffer buf)
+          (insert-file-contents file nil nil nil 'replace))
+        (org-with-wide-buffer
+         (org-find-property id-prop id))))))
+
+(defun org-generic-id--truename-function ()
+  "Return a function mapping a file name to its true name, memoized."
+  (let ((memo (org-generic-id--make-hash-table)))
+    (lambda (file)
+      (or (gethash file memo)
+          (puthash file (or (ignore-errors (file-truename file)) file)
+                   memo)))))
+
+(defvar org-generic-id--reported-duplicates (org-generic-id--make-hash-table)
+  "Duplicated IDs reported so far, as keys (ID-PROP . ID).
+A duplicate is reported once, and again only if it recurs after it was
+resolved.")
+
+(defun org-generic-id--record-scan (id-prop scanned unchanged silent truename)
+  "Record the IDs found by a scan for ID-PROP in `org-generic-id-locations'.
+SCANNED lists (FILE . IDS) for each file read, in scan order, and
+UNCHANGED the files skipped because their text did not change since
+they were last read.  TRUENAME maps a file name to its true name.
+Forget the IDs recorded for the files in SCANNED, then map each of
+their IDs to its file; for an ID found more than once, the last file
+wins.
+
+An ID is duplicated when it appears twice in SCANNED, or when a file in
+UNCHANGED still records and holds it.  Unless SILENT, report each
+duplicate not reported before.  Return (NDUP . FILES): NDUP is the
+number of duplicates reported, and FILES a hash table whose keys are the
+true names of the files holding duplicated IDs.
+
+Must be called with an Org buffer current that may be overwritten."
+  (let ((table (gethash id-prop org-generic-id-locations))
+        (rescanned (org-generic-id--make-hash-table))
+        (kept (org-generic-id--make-hash-table))
+        ;; Each ID found, mapped to the true name of its first file.
+        (seen (org-generic-id--make-hash-table))
+        (dups (org-generic-id--make-hash-table))
+        (dup-files (org-generic-id--make-hash-table))
+        (ndup 0))
+    (dolist (s scanned)
+      (puthash (funcall truename (car s)) t rescanned))
+    (dolist (file unchanged)
+      (puthash (funcall truename file) t kept))
+    ;; Compare true names: an ID may have been recorded under another
+    ;; name for the same file, e.g. by `org-generic-id-add-location'.
+    (maphash (lambda (id file)
+               (when (gethash (funcall truename file) rescanned)
+                 (remhash id table)))
+             table)
+    (dolist (s scanned)
+      (let ((file (funcall truename (car s))))
+        (dolist (id (cdr s))
+          (let* ((other (gethash id table))
+                 (twin
+                  (or (gethash id seen)
+                      ;; A record can outlive its entry, e.g. when the
+                      ;; buffer was reverted after the ID was added, so
+                      ;; check the unchanged file still holds the ID.
+                      (and other
+                           (gethash (funcall truename other) kept)
+                           (org-generic-id--file-holds-id-p other id-prop id)
+                           (funcall truename other)))))
+            (when twin
+              (puthash id t dups)
+              (puthash twin t dup-files)
+              (puthash file t dup-files))
+            (unless (gethash id seen)
+              (puthash id file seen))
+            (puthash id (car s) table)))))
+    ;; Report new duplicates, and forget resolved ones so that they are
+    ;; reported again if they recur.
+    (maphash (lambda (id _)
+               (let ((key (cons id-prop id)))
+                 (cond
+                  ((not (gethash id dups))
+                   (remhash key org-generic-id--reported-duplicates))
+                  ((or silent
+                       (gethash key org-generic-id--reported-duplicates)))
+                  (t
+                   (puthash key t org-generic-id--reported-duplicates)
+                   (message "Duplicate :%s: property %S" id-prop id)
+                   (cl-incf ndup)))))
+             seen)
+    (cons ndup dup-files)))
 
 (defun org-generic-id-locations-save ()
   "Save `org-generic-id-locations' in `org-generic-id-locations-file'."
@@ -448,41 +594,6 @@ optional argument MARKERP, return the position as a new marker."
         ;; Remove opened buffer in the process.
         (unless (or visiting markerp) (kill-buffer buffer)))))))
 
-(cl-defun org-generic-id-files-modified-since-modtime (modtime files &optional file-to-buf)
-  "Return all files modified since a certain time.
-MODTIME is a timestamp of the format returned by ‘current-time’.
-of filenames that should be checked.
-
-Each filename’s modtime is checked as follows:
-
-- If there is no buffer visiting the file, the modtime is read from the file
-  system and checked against MODTIME.
-- If the buffer visiting the file is marked modified, it is always considered
-  modified.
-- Otherwise, the modtime is read using ‘visited-file-modtime’ from the buffer
-  visiting the file.
-
-FILE-TO-BUF, if present, is a hashtable mapping file names to either the buffer
-visiting that file, or nil if it’s known that no file is visiting the buffer.
-See ‘org-generic-id--files' for more information about the format."
-  (if (null modtime)
-      files
-    (cl-loop for file in files
-             when (file-exists-p file)
-             if
-             (let* ((buf (org-generic-id--get-file-to-buf file-to-buf file)))
-               (cond
-                ((null buf)
-                 (time-less-p modtime
-                              (file-attribute-modification-time
-                               (file-attributes file))))
-                ((buffer-modified-p buf) t)
-                (t
-                 (time-less-p modtime
-                              (with-current-buffer buf
-                                (visited-file-modtime))))))
-             collect file)))
-
 (defun org-generic-id--get-file-to-buf (file-to-buf file)
   "Get buffer visiting FILE, or nil if no such buffer.
 
@@ -497,25 +608,6 @@ FILE-TO-BUF, whose format is documented at ‘org-generic-id--files’."
         (org-generic-id--files-buffer-hook-impl
          file-to-buf file buf)
         buf))))
-
-(defun org-generic-id--last-update-id-time-get (id-prop)
-  "Get last update ID time for ID-PROP.
-ID-PROP is a string.  This function converts ID-PROP to a symbol in order to
-query ‘org-generic-id--last-update-id-time' using ‘plist-get’."
-  (plist-get org-generic-id--last-update-id-time (intern id-prop)))
-
-(defun org-generic-id--last-update-id-time-put (id-prop time)
-  "Set last update ID time for ID-PROP to TIME.
-ID-PROP is a string; TIME is an Emacs time value as returned by ‘encode-time’.
-This function converts ID-PROP to a symbol in order to query
-‘org-generic-id--last-update-id-time' using ‘plist-put’."
-  ;; Work around the fact that ‘plist-put’ does nothing if the plist is nil,
-  ;; since a nil list can’t be mutated in place.
-  (if org-generic-id--last-update-id-time
-      (plist-put org-generic-id--last-update-id-time
-                 (intern id-prop) time)
-    (setq org-generic-id--last-update-id-time
-          (list (intern id-prop) time))))
 
 (defun org-generic-id--files-find-file-hook ()
   "Update ‘org-generic-id--files’ after a file is loaded."
