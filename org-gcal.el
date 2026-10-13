@@ -1112,68 +1112,78 @@ Any parent recurring events are appended in-place to the list PARENT-EVENTS."
 
 Find already retrieved entries and update them. This will update events that
 have been moved from the default fetch file.  CALENDAR-ID is defined in
-`org-gcal--sync-inner'."
+`org-gcal--sync-inner'.
+
+Return a `deferred' object that succeeds with nil once every entry is
+updated, so that the next steps of a sync run after the updates."
   (deferred:$
    (deferred:loop entries
                   (lambda (entry)
-                    (deferred:$
-                     (let* ((entry-id (org-gcal--event-entry-entry-id entry))
-                            (stored-marker (org-gcal--event-entry-marker entry))
-                            ;; A marker whose buffer was killed (by revert,
-                            ;; kill-buffer, or `set-marker ... nil') is still
-                            ;; truthy but unusable, so re-find by entry-id.
-                            (marker (if (and stored-marker
-                                              (marker-buffer stored-marker))
-                                         stored-marker
-                                       (org-gcal--id-find entry-id)))
-                            (event (org-gcal--event-entry-event entry))
-                            (inactive-p (org-gcal--event-entry-inactive entry)))
-                       (cond
-                        ;; `org-gcal--id-find' returns nil when the entry was
-                        ;; renamed/deleted between syncs.  Skip rather than
-                        ;; falling through to `org-with-point-at nil', which
-                        ;; would land at current point and crash `--update-entry'
-                        ;; with "Must be on Org-mode heading.".
-                        ((null marker)
-                         (message "org-gcal: skipping entry %s — not found in any file"
-                                  entry-id)
-                         (deferred:succeed nil))
-                        ((and (markerp marker)
-                              (not (marker-buffer marker)))
-                         (error "org-gcal: marker's buffer for entry %s has been killed"
-                                entry-id))
-                        (t
-                         (org-with-point-at marker
-                           ;; If skipping exports, just overwrite current entry's
-                           ;; calendar data with what's been retrieved from the
-                           ;; server. Otherwise, sync the entry at the current
-                           ;; point.
-                           (set-marker marker nil)
-                           (cond
-                            ;; A server etag equal to the stored one means the
-                            ;; event is unchanged: skip the rewrite.  Rewriting
-                            ;; identical text still marks the buffer modified,
-                            ;; causing file-save churn on calendars whose sync
-                            ;; tokens Google expires with HTTP 410 on nearly
-                            ;; every sync (e.g. public holiday calendars),
-                            ;; degrading each sync to a full re-fetch.
-                            ((and skip-export event
-                                  (plist-get event :etag)
-                                  (equal (plist-get event :etag)
-                                         (org-entry-get (point) org-gcal-etag-property)))
-                             (deferred:succeed nil))
-                            ((and skip-export event)
-                             (org-gcal--update-entry calendar-id event
-                                                     'update-existing inactive-p)
-                             (deferred:succeed nil))
-                            (t
-                             (org-gcal-post-at-point nil skip-export
-                                                     (org-gcal--sync-get-update-existing))))))))
-                     ;; Log but otherwise ignore errors.
-                     (deferred:error it
-                                     (lambda (err)
-                                       (message "org-gcal-sync: error: %s" err))))))
-   (deferred:succeed nil)))
+                    (let ((log-error
+                           (lambda (err)
+                             (message "org-gcal-sync: error: %s" err))))
+                      ;; Log but otherwise ignore errors.  Also catch those
+                      ;; signaled before a deferred object is returned: the
+                      ;; loop would skip the next entries.
+                      (condition-case err
+                          (deferred:error
+                           (let* ((entry-id (org-gcal--event-entry-entry-id entry))
+                                  (stored-marker (org-gcal--event-entry-marker entry))
+                                  ;; A marker whose buffer was killed (by revert,
+                                  ;; kill-buffer, or `set-marker ... nil') is still
+                                  ;; truthy but unusable, so re-find by entry-id.
+                                  (marker (if (and stored-marker
+                                                   (marker-buffer stored-marker))
+                                              stored-marker
+                                            (org-gcal--id-find entry-id)))
+                                  (event (org-gcal--event-entry-event entry))
+                                  (inactive-p (org-gcal--event-entry-inactive entry)))
+                             (cond
+                              ;; `org-gcal--id-find' returns nil when the entry was
+                              ;; renamed/deleted between syncs.  Skip rather than
+                              ;; falling through to `org-with-point-at nil', which
+                              ;; would land at current point and crash `--update-entry'
+                              ;; with "Must be on Org-mode heading.".
+                              ((null marker)
+                               (message "org-gcal: skipping entry %s — not found in any file"
+                                        entry-id)
+                               (deferred:succeed nil))
+                              ((and (markerp marker)
+                                    (not (marker-buffer marker)))
+                               (error "org-gcal: marker's buffer for entry %s has been killed"
+                                      entry-id))
+                              (t
+                               (org-with-point-at marker
+                                 ;; If skipping exports, just overwrite current entry's
+                                 ;; calendar data with what's been retrieved from the
+                                 ;; server. Otherwise, sync the entry at the current
+                                 ;; point.
+                                 (set-marker marker nil)
+                                 (cond
+                                  ;; A server etag equal to the stored one means the
+                                  ;; event is unchanged: skip the rewrite.  Rewriting
+                                  ;; identical text still marks the buffer modified,
+                                  ;; causing file-save churn on calendars whose sync
+                                  ;; tokens Google expires with HTTP 410 on nearly
+                                  ;; every sync (e.g. public holiday calendars),
+                                  ;; degrading each sync to a full re-fetch.
+                                  ((and skip-export event
+                                        (plist-get event :etag)
+                                        (equal (plist-get event :etag)
+                                               (org-entry-get (point) org-gcal-etag-property)))
+                                   (deferred:succeed nil))
+                                  ((and skip-export event)
+                                   (org-gcal--update-entry calendar-id event
+                                                           'update-existing inactive-p)
+                                   (deferred:succeed nil))
+                                  (t
+                                   (org-gcal-post-at-point nil skip-export
+                                                           (org-gcal--sync-get-update-existing))))))))
+                           log-error)
+                        (error (funcall log-error err) nil)))))
+   ;; Chain onto the loop, so the next steps of the sync, such as
+   ;; compaction, wait for the updates.
+   (deferred:nextc it #'ignore)))
 
 (defun org-gcal--sync-lock ()
   "Activate sync lock."

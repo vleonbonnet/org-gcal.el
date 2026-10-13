@@ -644,10 +644,7 @@ Second paragraph
 The entry is synced with `skip-export', so it is updated from
 `org-gcal-test-event'.  `org-gcal--id-find', used to re-find the
 entry after its cached marker went stale, is stubbed to return REFOUND."
-  (cl-letf (((symbol-function 'deferred:loop)
-             (lambda (entries body)
-               (funcall body (car entries))))
-            ((symbol-function 'org-gcal--id-find)
+  (cl-letf (((symbol-function 'org-gcal--id-find)
              (lambda (&rest _) refound)))
     (deferred:sync!
      (org-gcal--sync-update-entries
@@ -695,11 +692,92 @@ entry after its cached marker went stale, is stubbed to return REFOUND."
       messages))))
 
 (ert-deftest org-gcal-test--sync-update-entries-refound-marker-killed ()
-  "Verify sync reports a clear error when the re-found marker is also stale."
-  (org-gcal-test--should-error-match
-      "marker.*buffer.*foobar1234/foo@foobar.com.*killed"
-    (org-gcal-test--sync-update-stale-entry
-     (org-gcal-test--stale-marker "* My event summary\n"))))
+  "Verify sync logs a clear error when the re-found marker is also stale."
+  (let ((messages nil))
+    (cl-letf (((symbol-function 'message)
+               (lambda (format-string &rest args)
+                 (push (apply #'format format-string args) messages))))
+      (org-gcal-test--sync-update-stale-entry
+       (org-gcal-test--stale-marker "* My event summary\n")))
+    (should
+     (cl-some
+      (lambda (message)
+        (string-match-p
+         "error:.*marker.*buffer.*foobar1234/foo@foobar.com.*killed"
+         message))
+      messages))))
+
+(defconst org-gcal-test--update-entries-buffer
+  "\
+* Old event summary
+:PROPERTIES:
+:calendar-id: foo@foobar.com
+:entry-id:       foobar1234/foo@foobar.com
+:END:
+* Second event
+:PROPERTIES:
+:calendar-id: foo@foobar.com
+:entry-id:       second5678/foo@foobar.com
+:END:
+"
+  "Two entries for `org-gcal--sync-update-entries' to update.")
+
+(defun org-gcal-test--update-entries (done)
+  "Update the entries of the current buffer, then call DONE.
+The current buffer holds `org-gcal-test--update-entries-buffer'.  Run
+`org-gcal--sync-update-entries' on both entries, and call DONE with no
+argument once the deferred object it returns succeeds."
+  (let ((entries
+         (mapcar (lambda (entry-id)
+                   (goto-char (point-min))
+                   (re-search-forward (regexp-quote entry-id))
+                   (org-back-to-heading t)
+                   (org-gcal--event-entry-create
+                    :entry-id entry-id
+                    :marker (point-marker)
+                    :event org-gcal-test-event))
+                 '("foobar1234/foo@foobar.com" "second5678/foo@foobar.com"))))
+    (deferred:sync!
+     (deferred:nextc
+      (org-gcal--sync-update-entries org-gcal-test-calendar-id entries t)
+      (lambda (_) (funcall done))))))
+
+(ert-deftest org-gcal-test--sync-update-entries-waits-for-updates ()
+  "Verify the deferred object returned by an update succeeds after it.
+The steps of a sync that follow the update of entries, such as the
+compaction of recurring event instances, must not run before."
+  (let ((log nil))
+    (org-gcal-test--with-temp-buffer org-gcal-test--update-entries-buffer
+      (cl-letf (((symbol-function 'org-gcal--update-entry)
+                 (lambda (&rest _)
+                   (push (org-entry-get nil org-gcal-entry-id-property) log))))
+        (org-gcal-test--update-entries (lambda () (push 'done log)))))
+    (should (equal (reverse log)
+                   '("foobar1234/foo@foobar.com" "second5678/foo@foobar.com"
+                     done)))))
+
+(ert-deftest org-gcal-test--sync-update-entries-error-skips-entry ()
+  "Verify an error updating an entry is logged, and the others are updated."
+  (let ((log nil)
+        (messages nil))
+    (org-gcal-test--with-temp-buffer org-gcal-test--update-entries-buffer
+      (cl-letf (((symbol-function 'org-gcal--update-entry)
+                 (lambda (&rest _)
+                   (let ((entry-id (org-entry-get nil org-gcal-entry-id-property)))
+                     (when (equal entry-id "foobar1234/foo@foobar.com")
+                       (error "Cannot update %s" entry-id))
+                     (push entry-id log))))
+                ((symbol-function 'message)
+                 (lambda (format-string &rest args)
+                   (push (apply #'format format-string args) messages))))
+        (org-gcal-test--update-entries (lambda () (push 'done log)))))
+    (should (equal (reverse log) '("second5678/foo@foobar.com" done)))
+    (should
+     (cl-some
+      (lambda (message)
+        (string-match-p "error:.*Cannot update foobar1234/foo@foobar.com"
+                        message))
+      messages))))
 
 (ert-deftest org-gcal-test--with-point-at-no-widen-stale-marker ()
   "Verify stale markers report the killed buffer before moving point."
@@ -1021,6 +1099,35 @@ the existing entry for an update instead."
        nil nil nil :instances)
       (deferred:flush-queue!))
     (should (member '((compacted) skip-export) updates))))
+
+(ert-deftest org-gcal-test--sync-calendar-events-compacts-after-updates ()
+  "Verify compaction runs after the fetched entries are updated.
+Compaction can delete the heading of an entry: an update that runs
+after it would rewrite the heading that follows instead."
+  (let ((log nil)
+        (org-gcal--instance-collector (make-hash-table :test #'equal)))
+    (puthash "parent123" (list org-gcal-test--moved-instance)
+             org-gcal--instance-collector)
+    (org-gcal-test--with-temp-buffer org-gcal-test--update-entries-buffer
+      (let ((entry (org-gcal--event-entry-create
+                    :entry-id "foobar1234/foo@foobar.com"
+                    :marker (point-marker)
+                    :event org-gcal-test-event)))
+        (cl-letf (((symbol-function 'org-gcal--sync-request-events)
+                   (lambda (&rest _) (deferred:succeed nil)))
+                  ((symbol-function 'org-gcal--sync-handle-response)
+                   (lambda (&rest _) []))
+                  ((symbol-function 'org-gcal--sync-handle-events)
+                   (lambda (&rest _) (list entry)))
+                  ((symbol-function 'org-gcal--update-entry)
+                   (lambda (&rest _) (push 'update log)))
+                  ((symbol-function 'org-gcal--compact-instances)
+                   (lambda (&rest _) (push 'compact log) nil)))
+          (org-gcal--sync-calendar-events
+           (cons org-gcal-test-calendar-id "calendar.org") 'skip-export nil nil
+           nil nil nil :instances)
+          (deferred:flush-queue!))))
+    (should (equal (reverse log) '(update compact)))))
 
 (ert-deftest org-gcal-test--post-at-point-api-response ()
   "Verify that ‘org-gcal-post-to-point’ updates an event using the data
