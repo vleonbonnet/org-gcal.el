@@ -2918,28 +2918,44 @@ START and END are dates or date-times as returned by
 EVENT is an event resource from the Calendar API.  When MASTER is
 non-nil, EVENT is the master of a recurring event, shown by a parent
 heading in `instances' mode: a weekly rule on several days, which one
-Org repeater can't show, gets a timestamp for each day."
+Org repeater can't show, gets a timestamp for each day, and a master
+starting before 1970 starts at its first occurrence since."
   (let* ((start (org-gcal--event-local-time (plist-get event :start)))
          (end (org-gcal--event-local-time (plist-get event :end)))
          (recurrence (plist-get event :recurrence))
-         (days (and master (org-gcal--rrule-expand-days recurrence))))
-    (if days
-        (let* ((date (org-gcal--parse-date start))
-               (start-day (calendar-day-of-week
-                           (list (plist-get date :mon)
-                                 (plist-get date :day)
-                                 (plist-get date :year))))
-               (repeater (org-gcal--rrule-weekly-repeater recurrence)))
-          (mapcar (lambda (day)
-                    (org-gcal--event-timestamp
-                     (org-gcal--shift-iso-date start (cdr day) start-day)
-                     (org-gcal--shift-iso-date end (cdr day) start-day)
-                     repeater))
-                  days))
+         (days (and master (org-gcal--rrule-expand-days recurrence)))
+         (streams (and master (org-gcal--series-streams event))))
+    (cond
+     ;; The agenda skips a repeater starting before 1970 on platforms
+     ;; where Emacs time values can't hold such a date: start at the
+     ;; first occurrence since, leaving a day for zones ahead of UTC.
+     ((and streams
+           (< (plist-get (org-gcal--parse-date start) :year) 1970))
+      (let ((after (1- (org-gcal--time-minutes "1970-01-02"))))
+        (mapcar (lambda (stream)
+                  (org-gcal--series-occurrence-timestamp
+                   event
+                   (org-gcal--series-next-occurrence event (car stream) after)
+                   (cdr stream)))
+                streams)))
+     (days
+      (let* ((date (org-gcal--parse-date start))
+             (start-day (calendar-day-of-week
+                         (list (plist-get date :mon)
+                               (plist-get date :day)
+                               (plist-get date :year))))
+             (repeater (org-gcal--rrule-weekly-repeater recurrence)))
+        (mapcar (lambda (day)
+                  (org-gcal--event-timestamp
+                   (org-gcal--shift-iso-date start (cdr day) start-day)
+                   (org-gcal--shift-iso-date end (cdr day) start-day)
+                   repeater))
+                days)))
+     (t
       (list (org-gcal--event-timestamp
              start end
              (or (plist-get event :org-gcal-repeater)
-                 (org-gcal--rrule-to-repeater recurrence)))))))
+                 (org-gcal--rrule-to-repeater recurrence))))))))
 
 (defun org-gcal--update-entry (calendar-id event &optional update-mode master)
   "Update the entry at the current heading with information from EVENT.
