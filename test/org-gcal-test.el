@@ -892,21 +892,45 @@ they left."
 
 ;;; Instances of recurring events
 
+(defmacro org-gcal-test--with-utc (&rest body)
+  "Run BODY with the local time zone set to UTC."
+  (declare (indent 0) (debug t))
+  `(let ((tz (getenv "TZ")))
+     (set-time-zone-rule t)
+     (unwind-protect
+         (progn ,@body)
+       (set-time-zone-rule tz))))
+
 (defconst org-gcal-test--parent-event
   `(:kind "calendar#event" :etag "\"1\"" :id "parent123" :status "confirmed"
     :summary "My recurring event"
-    :start (:dateTime "2026-09-30T08:00:00-07:00")
-    :end (:dateTime "2026-09-30T13:00:00-07:00"))
-  "Master of a recurring event, without the recurrence rule.
-Compaction then leaves the parent's timestamps alone.")
+    :recurrence ["RRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=WE"]
+    :start (:dateTime "2026-09-30T08:00:00Z")
+    :end (:dateTime "2026-09-30T13:00:00Z"))
+  "Master of a recurring event, every other Wednesday.")
+
+(defun org-gcal-test--instance (date &optional moved-to)
+  "Return the instance of `org-gcal-test--parent-event' on DATE.
+DATE is a date such as \"2026-10-14\".  Move the instance to the date
+MOVED-TO if non-nil."
+  (let ((start (or moved-to date)))
+    `(:kind "calendar#event" :etag ,(format "\"%s\"" date)
+      :id ,(format "parent123_%sT080000Z" (string-replace "-" "" date))
+      :status "confirmed" :summary "My recurring event"
+      :recurringEventId "parent123"
+      :originalStartTime (:dateTime ,(concat date "T08:00:00Z"))
+      :start (:dateTime ,(concat start "T08:00:00Z"))
+      :end (:dateTime ,(concat start "T13:00:00Z")))))
+
+(defun org-gcal-test--cancelled-instance (date)
+  "Return the cancelled instance of `org-gcal-test--parent-event' on DATE."
+  `(:kind "calendar#event" :etag ,(format "\"%s\"" date)
+    :id ,(format "parent123_%sT080000Z" (string-replace "-" "" date))
+    :status "cancelled" :recurringEventId "parent123"
+    :originalStartTime (:dateTime ,(concat date "T08:00:00Z"))))
 
 (defconst org-gcal-test--moved-instance
-  `(:kind "calendar#event" :etag "\"2\"" :id "parent123_20261014T150000Z"
-    :status "confirmed" :summary "My recurring event"
-    :recurringEventId "parent123"
-    :originalStartTime (:dateTime "2026-10-14T08:00:00-07:00")
-    :start (:dateTime "2026-10-16T08:00:00-07:00")
-    :end (:dateTime "2026-10-16T13:00:00-07:00"))
+  (org-gcal-test--instance "2026-10-14" "2026-10-16")
   "Instance of `org-gcal-test--parent-event' moved to another day.")
 
 (defconst org-gcal-test--parent-entry
@@ -917,24 +941,51 @@ Compaction then leaves the parent's timestamps alone.")
 :entry-id: parent123/foo@foobar.com
 :org-gcal-managed: gcal
 :END:
+
+[2026-09-30 Wed 08:00-13:00 +2w]
+
+Description
 "
   "Heading of `org-gcal-test--parent-event'.")
 
-(defconst org-gcal-test--instance-entry
-  "*** My recurring event
+(defun org-gcal-test--instance-entry (instance &optional subheading)
+  "Return the child heading of INSTANCE of `org-gcal-test--parent-event'.
+Add a SUBHEADING under it if non-nil."
+  (format "*** My recurring event
 :PROPERTIES:
-:ETag:     \"2\"
+:ETag:     %s
 :calendar-id: foo@foobar.com
-:entry-id: parent123_20261014T150000Z/foo@foobar.com
+:entry-id: %s/foo@foobar.com
 :org-gcal-managed: gcal
 :END:
 
-<2026-10-16 Fri 08:00-13:00>
-"
-  "Heading of `org-gcal-test--moved-instance', under its parent.")
+%s
+%s"
+          (plist-get instance :etag)
+          (plist-get instance :id)
+          (org-gcal--instance-timestamp instance)
+          (if subheading (concat "**** " subheading "\n") "")))
 
 (defconst org-gcal-test--instance-entry-id
-  "parent123_20261014T150000Z/foo@foobar.com")
+  "parent123_20261014T080000Z/foo@foobar.com")
+
+(defconst org-gcal-test--usual-entry-id
+  "parent123_20261028T080000Z/foo@foobar.com"
+  "Entry ID of the instance of `org-gcal-test--parent-event' on Oct 28.")
+
+(defun org-gcal-test--instances ()
+  "Return instances of `org-gcal-test--parent-event', one of them moved.
+The next instance after them is on 2026-11-25."
+  (list (org-gcal-test--instance "2026-09-30")
+        org-gcal-test--moved-instance
+        (org-gcal-test--instance "2026-10-28")
+        (org-gcal-test--instance "2026-11-11")))
+
+(defconst org-gcal-test--up-time (encode-time '(0 0 0 1 9 2026 nil nil t))
+  "Start of the synced time range.")
+
+(defconst org-gcal-test--down-time (encode-time '(0 0 0 20 11 2026 nil nil t))
+  "End of the synced time range, before the instance on 2026-11-25.")
 
 (defun org-gcal-test--write-file (file seconds &rest contents)
   "Write CONTENTS to FILE, modified SECONDS after a fixed base time."
@@ -942,13 +993,13 @@ Compaction then leaves the parent's timestamps alone.")
     (apply #'insert contents))
   (set-file-times file (time-add (seconds-to-time 1767268800) seconds)))
 
-(defmacro org-gcal-test--with-instance-files (instance-p &rest body)
+(defmacro org-gcal-test--with-instance-files (children &rest body)
   "Run BODY with a parent file and a calendar file visited.
 The parent file holds `org-gcal-test--parent-entry', followed by
-`org-gcal-test--instance-entry' if INSTANCE-P.  The ID index scans both
-files, but records only the parent: it doesn't know about an instance
-another computer added.  BODY runs in the calendar file's buffer, and
-can refer to `parent-file', `parent-buffer' and `calendar-file'."
+CHILDREN, a string of child headings.  The ID index scans both files,
+but records only the parent: it doesn't know about an instance another
+computer added.  BODY runs in the calendar file's buffer, in body mode,
+and can refer to `parent-file', `parent-buffer' and `calendar-file'."
   (declare (indent 1) (debug t))
   `(let* ((parent-file (abbreviate-file-name
                         (file-truename (make-temp-file "parent." nil ".org"))))
@@ -965,14 +1016,13 @@ can refer to `parent-file', `parent-buffer' and `calendar-file'."
           (org-generic-id-extra-files nil)
           (org-generic-id-search-archives nil)
           (org-id-locations (make-hash-table :test #'equal))
+          (org-gcal-description-mode 'body)
           (org-gcal--parent-event-cache nil)
-          (org-gcal--instance-collector nil)
+          (org-gcal--changed-series nil)
           (parent-buffer nil)
           (calendar-buffer nil))
      (org-gcal-test--write-file parent-file 0 org-gcal-test--parent-entry
-                                (if ,instance-p
-                                    org-gcal-test--instance-entry
-                                  ""))
+                                (or ,children ""))
      (org-gcal-test--write-file calendar-file 0 "")
      (unwind-protect
          (progn
@@ -980,9 +1030,12 @@ can refer to `parent-file', `parent-buffer' and `calendar-file'."
                  calendar-buffer (find-file-noselect calendar-file))
            (org-generic-id-update-id-locations org-gcal-entry-id-property
                                                nil t)
-           (remhash org-gcal-test--instance-entry-id
-                    (gethash org-gcal-entry-id-property
-                             org-generic-id-locations))
+           (let ((table (gethash org-gcal-entry-id-property
+                                 org-generic-id-locations)))
+             (maphash (lambda (id _)
+                        (unless (equal id "parent123/foo@foobar.com")
+                          (remhash id table)))
+                      table))
            (with-current-buffer calendar-buffer
              ,@body))
        (dolist (buffer (list parent-buffer calendar-buffer))
@@ -990,124 +1043,457 @@ can refer to `parent-file', `parent-buffer' and `calendar-file'."
            (with-current-buffer buffer (set-buffer-modified-p nil))
            (kill-buffer buffer))))))
 
-(defun org-gcal-test--count-instance-entries (buffer)
-  "Return the number of entries for the moved instance in BUFFER."
+(defun org-gcal-test--count-entries (buffer entry-id)
+  "Return the number of entries with ENTRY-ID in BUFFER."
   (with-current-buffer buffer
     (org-with-wide-buffer
      (goto-char (point-min))
-     (how-many (concat "^:entry-id: "
-                       (regexp-quote org-gcal-test--instance-entry-id)
-                       "$")))))
+     (how-many (concat "^:entry-id: " (regexp-quote entry-id) "$")))))
+
+(defun org-gcal-test--count-instance-entries (buffer)
+  "Return the number of entries for the moved instance in BUFFER."
+  (org-gcal-test--count-entries buffer org-gcal-test--instance-entry-id))
+
+(defun org-gcal-test--parent-timestamps (buffer)
+  "Return the timestamp lines at the start of the parent body in BUFFER."
+  (with-current-buffer buffer
+    (org-with-wide-buffer
+     (goto-char (point-min))
+     (search-forward ":entry-id: parent123/foo@foobar.com")
+     (org-back-to-heading t)
+     (org-end-of-meta-data t)
+     (let ((timestamps nil))
+       (while (looking-at org-gcal--timestamp-line-regexp)
+         (push (match-string-no-properties 0) timestamps)
+         (forward-line))
+       (nreverse timestamps)))))
 
 (ert-deftest org-gcal-test--id-find-instance-after-revert ()
   "Verify `org-gcal--id-find' finds an entry read by reverting its buffer.
 Another computer added it to the file after the ID index was updated."
-  (org-gcal-test--with-instance-files nil
-    (should-not (org-gcal--id-find org-gcal-test--instance-entry-id))
-    (org-gcal-test--write-file parent-file 60 org-gcal-test--parent-entry
-                               org-gcal-test--instance-entry)
-    (with-current-buffer parent-buffer
-      (revert-buffer t t t))
-    (let ((marker (org-gcal--id-find org-gcal-test--instance-entry-id
-                                     'markerp)))
-      (should (eq (marker-buffer marker) parent-buffer)))))
+  (org-gcal-test--with-utc
+    (org-gcal-test--with-instance-files nil
+      (should-not (org-gcal--id-find org-gcal-test--instance-entry-id))
+      (org-gcal-test--write-file
+       parent-file 60 org-gcal-test--parent-entry
+       (org-gcal-test--instance-entry org-gcal-test--moved-instance))
+      (with-current-buffer parent-buffer
+        (revert-buffer t t t))
+      (let ((marker (org-gcal--id-find org-gcal-test--instance-entry-id
+                                       'markerp)))
+        (should (eq (marker-buffer marker) parent-buffer))))))
 
-(ert-deftest org-gcal-test--compact-instances-finds-unindexed-instance ()
-  "Verify compaction doesn't insert an instance already under its parent.
+;;;; Timestamps of recurring events
+
+(ert-deftest org-gcal-test--event-timestamps-master-on-several-days ()
+  "Verify a weekly master on several days gets a timestamp for each day."
+  (org-gcal-test--with-utc
+    (should (equal (org-gcal--event-timestamps
+                    '(:recurrence ["RRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,WE"]
+                      :start (:dateTime "2026-10-05T09:00:00Z")
+                      :end (:dateTime "2026-10-05T10:00:00Z"))
+                    'master)
+                   '("<2026-10-05 Mon 09:00-10:00 +2w>"
+                     "<2026-10-07 Wed 09:00-10:00 +2w>")))))
+
+(ert-deftest org-gcal-test--update-entry-master-active-timestamps ()
+  "Verify the parent heading of a recurring event gets active timestamps."
+  (org-gcal-test--with-utc
+    (org-gcal-test--with-temp-buffer "* \n:PROPERTIES:\n:END:\n"
+      (let ((org-gcal-description-mode 'body))
+        (cl-letf (((symbol-function 'org-generic-id-add-location) #'ignore))
+          (org-gcal--update-entry org-gcal-test-calendar-id
+                                  org-gcal-test--parent-event nil 'master))
+        (should (string-match-p "\n<2026-09-30 Wed 08:00-13:00 \\+2w>\n"
+                                (buffer-string)))
+        (should-not (string-match-p "\\[2026" (buffer-string)))))))
+
+(ert-deftest org-gcal-test--series-timestamps-without-exceptions ()
+  "Verify a recurring event without exceptions shows its repeater."
+  (org-gcal-test--with-utc
+    (should (equal (org-gcal--series-timestamps
+                    org-gcal-test--parent-event
+                    (list (org-gcal-test--instance "2026-09-30")
+                          (org-gcal-test--instance "2026-10-14"))
+                    nil org-gcal-test--down-time)
+                   '("<2026-09-30 Wed 08:00-13:00 +2w>")))))
+
+(ert-deftest org-gcal-test--series-timestamps-skip-exception ()
+  "Verify the timestamps of a recurring event skip a moved instance.
+The usual instances until it get a timestamp each, the others a
+repeater."
+  (org-gcal-test--with-utc
+    (should (equal (org-gcal--series-timestamps
+                    org-gcal-test--parent-event
+                    (list (org-gcal-test--instance "2026-09-30")
+                          (org-gcal-test--instance "2026-10-28")
+                          (org-gcal-test--instance "2026-11-11"))
+                    (list org-gcal-test--moved-instance)
+                    org-gcal-test--down-time)
+                   '("<2026-09-30 Wed 08:00-13:00>"
+                     "<2026-10-28 Wed 08:00-13:00 +2w>")))))
+
+(ert-deftest org-gcal-test--series-timestamps-skip-cancelled ()
+  "Verify the timestamps of a recurring event skip a cancelled instance."
+  (org-gcal-test--with-utc
+    (should (equal (org-gcal--series-timestamps
+                    org-gcal-test--parent-event
+                    (list (org-gcal-test--instance "2026-09-30")
+                          (org-gcal-test--instance "2026-10-14")
+                          (org-gcal-test--instance "2026-11-11"))
+                    (list (org-gcal-test--cancelled-instance "2026-10-28"))
+                    org-gcal-test--down-time)
+                   '("<2026-09-30 Wed 08:00-13:00>"
+                     "<2026-10-14 Wed 08:00-13:00>"
+                     "<2026-11-11 Wed 08:00-13:00 +2w>")))))
+
+(ert-deftest org-gcal-test--series-timestamps-repeat-after-time-range ()
+  "Verify the repeater starts after the time range if no instance is left."
+  (org-gcal-test--with-utc
+    (should (equal (org-gcal--series-timestamps
+                    org-gcal-test--parent-event
+                    (list (org-gcal-test--instance "2026-09-30"))
+                    (list org-gcal-test--moved-instance)
+                    (encode-time '(0 0 0 20 10 2026 nil nil t)))
+                   '("<2026-09-30 Wed 08:00-13:00>"
+                     "<2026-10-28 Wed 08:00-13:00 +2w>")))))
+
+(ert-deftest org-gcal-test--series-timestamps-ended ()
+  "Verify a recurring event that ended in the time range doesn't repeat."
+  (org-gcal-test--with-utc
+    (should (equal (org-gcal--series-timestamps
+                    org-gcal-test--parent-event
+                    (list (org-gcal-test--instance "2026-09-30")
+                          (org-gcal-test--instance "2026-10-28"))
+                    (list org-gcal-test--moved-instance)
+                    (encode-time '(0 0 0 31 12 2026 nil nil t)))
+                   '("<2026-09-30 Wed 08:00-13:00>"
+                     "<2026-10-28 Wed 08:00-13:00>")))))
+
+(ert-deftest org-gcal-test--series-timestamps-several-days ()
+  "Verify a weekly recurring event on several days repeats each day."
+  (org-gcal-test--with-utc
+    (let ((instance
+           (lambda (date &optional moved-to)
+             `(:id ,date :status "confirmed" :summary "Class"
+               :originalStartTime (:dateTime ,(concat date "T09:00:00Z"))
+               :start (:dateTime ,(concat (or moved-to date) "T09:00:00Z"))
+               :end (:dateTime ,(concat (or moved-to date) "T10:00:00Z"))))))
+      (should (equal (org-gcal--series-timestamps
+                      '(:summary "Class"
+                        :recurrence ["RRULE:FREQ=WEEKLY;BYDAY=MO,WE"]
+                        :start (:dateTime "2026-10-05T09:00:00Z")
+                        :end (:dateTime "2026-10-05T10:00:00Z"))
+                      (list (funcall instance "2026-10-05")
+                            (funcall instance "2026-10-12")
+                            (funcall instance "2026-10-14"))
+                      (list (funcall instance "2026-10-07" "2026-10-08"))
+                      (encode-time '(0 0 0 16 10 2026 nil nil t)))
+                     '("<2026-10-05 Mon 09:00-10:00>"
+                       "<2026-10-12 Mon 09:00-10:00 +1w>"
+                       "<2026-10-14 Wed 09:00-10:00 +1w>"))))))
+
+(ert-deftest org-gcal-test--series-timestamps-all-day ()
+  "Verify the timestamps of an all-day yearly event skip an exception."
+  (org-gcal-test--with-utc
+    (should (equal (org-gcal--series-timestamps
+                    '(:summary "Birthday" :recurrence ["RRULE:FREQ=YEARLY"]
+                      :start (:date "2014-04-24") :end (:date "2014-04-25"))
+                    (list '(:id "b_20270424" :status "confirmed"
+                            :summary "Birthday"
+                            :originalStartTime (:date "2027-04-24")
+                            :start (:date "2027-04-24")
+                            :end (:date "2027-04-25")))
+                    (list '(:id "b_20260424" :status "cancelled"
+                            :originalStartTime (:date "2026-04-24")))
+                    (encode-time '(0 0 0 1 6 2027 nil nil t)))
+                   '("<2027-04-24 Sat +1y>")))))
+
+(ert-deftest org-gcal-test--series-timestamps-without-repeater ()
+  "Verify each instance gets a timestamp when no repeater fits the rule."
+  (org-gcal-test--with-utc
+    (let ((instance
+           (lambda (date)
+             `(:id ,date :status "confirmed" :summary "Meeting"
+               :originalStartTime (:dateTime ,(concat date "T10:00:00Z"))
+               :start (:dateTime ,(concat date "T10:00:00Z"))
+               :end (:dateTime ,(concat date "T11:00:00Z"))))))
+      (should (equal (org-gcal--series-timestamps
+                      '(:summary "Meeting"
+                        :recurrence ["RRULE:FREQ=MONTHLY;BYDAY=1SU"]
+                        :start (:dateTime "2026-10-04T10:00:00Z")
+                        :end (:dateTime "2026-10-04T11:00:00Z"))
+                      (list (funcall instance "2026-10-04")
+                            (funcall instance "2026-11-01"))
+                      nil org-gcal-test--down-time)
+                     '("<2026-10-04 Sun 10:00-11:00>"
+                       "<2026-11-01 Sun 10:00-11:00>"))))))
+
+(defconst org-gcal-test--birthday
+  '(:summary "Birthday" :recurrence ["RRULE:FREQ=YEARLY"]
+    :start (:date "1953-05-21") :end (:date "1953-05-22"))
+  "Master of a yearly all-day event, starting before 1970.")
+
+(defun org-gcal-test--birthday-instance (year &optional status)
+  "Return the instance of `org-gcal-test--birthday' in YEAR, with STATUS."
+  (let ((date (format "%d-05-21" year)))
+    `(:id ,(format "b_%d0521" year) :status ,(or status "confirmed")
+      :summary "Birthday" :originalStartTime (:date ,date)
+      :start (:date ,date) :end (:date ,(format "%d-05-22" year)))))
+
+(ert-deftest org-gcal-test--instance-modified-p-before-1970 ()
+  "Verify an instance of an event starting before 1970 is not modified."
+  (should-not (org-gcal--instance-modified-p
+               (org-gcal-test--birthday-instance 2026) org-gcal-test--birthday)))
+
+(ert-deftest org-gcal-test--series-timestamps-before-1970 ()
+  "Verify the timestamps of an event starting before 1970 skip an exception."
+  (org-gcal-test--with-utc
+    (should (equal (org-gcal--series-timestamps
+                    org-gcal-test--birthday
+                    (list (org-gcal-test--birthday-instance 2026))
+                    nil (encode-time '(0 0 0 1 6 2027 nil nil t)))
+                   '("<1953-05-21 Thu +1y>")))
+    (should (equal (org-gcal--series-timestamps
+                    org-gcal-test--birthday
+                    (list (org-gcal-test--birthday-instance 2026))
+                    (list (org-gcal-test--birthday-instance 2027 "cancelled"))
+                    (encode-time '(0 0 0 1 6 2027 nil nil t)))
+                   '("<2026-05-21 Thu>" "<2028-05-21 Sun +1y>")))))
+
+(ert-deftest org-gcal-test--instance-id-minutes-split-series ()
+  "Verify the due date is read from the instance ID of a split event.
+The instances of a recurring event split in two keep the ID of the
+first master."
+  (should (equal (org-gcal--instance-id-minutes
+                  "abc_20261021T080000Z" '(:id "abc_R20260815T143000"))
+                 (org-gcal--time-minutes "2026-10-21")))
+  (should (equal (org-gcal--instance-id-minutes
+                  "abc_20261021" '(:id "abc"))
+                 (org-gcal--time-minutes "2026-10-21")))
+  (should-not (org-gcal--instance-id-minutes
+               "other_20261021T080000Z" '(:id "abc"))))
+
+(ert-deftest org-gcal-test--update-parent-timestamps-drawer ()
+  "Verify the timestamps in the drawer are replaced, not the description."
+  (org-gcal-test--with-temp-buffer
+      "* Event\n:PROPERTIES:\n:END:\n:org-gcal:\n[2026-09-30 Wed 08:00-13:00 +2w]\n\nDescription\n:END:\n"
+    (let ((org-gcal-description-mode 'drawer))
+      (org-gcal--update-parent-timestamps
+       (point-marker) '("<2026-09-30 Wed 08:00-13:00>"
+                        "<2026-10-28 Wed 08:00-13:00 +2w>")))
+    (should (equal (buffer-string)
+                   "* Event\n:PROPERTIES:\n:END:\n:org-gcal:\n<2026-09-30 Wed 08:00-13:00>\n<2026-10-28 Wed 08:00-13:00 +2w>\n\nDescription\n:END:\n"))))
+
+(ert-deftest org-gcal-test--update-parent-timestamps-unchanged ()
+  "Verify the buffer is left unmodified when the timestamps don't change."
+  (org-gcal-test--with-temp-buffer
+      "* Event\n:PROPERTIES:\n:END:\n\n<2026-09-30 Wed 08:00-13:00 +2w>\n<2026-10-01 Thu>--<2026-10-03 Sat>\n\nDescription\n"
+    (set-buffer-modified-p nil)
+    (let ((org-gcal-description-mode 'body))
+      (org-gcal--update-parent-timestamps
+       (point-marker) '("<2026-09-30 Wed 08:00-13:00 +2w>"
+                        "<2026-10-01 Thu>--<2026-10-03 Sat>")))
+    (should-not (buffer-modified-p))))
+
+;;;; Headings of recurring events
+
+(ert-deftest org-gcal-test--update-series-finds-unindexed-instance ()
+  "Verify a modified instance already under its parent isn't inserted.
 The ID index misses the instance, and the calendar file is not the
-parent's.  Compaction returns the existing entry for an update."
-  (org-gcal-test--with-instance-files t
-    (let ((org-gcal--parent-event-cache (make-hash-table :test #'equal))
-          (org-gcal--instance-collector (make-hash-table :test #'equal)))
-      (puthash "parent123" org-gcal-test--parent-event
-               org-gcal--parent-event-cache)
-      (puthash "parent123" (list org-gcal-test--moved-instance)
-               org-gcal--instance-collector)
-      (let ((entries (org-gcal--compact-instances org-gcal-test-calendar-id
-                                                  calendar-file)))
+parent's.  It is returned as an entry to update instead."
+  (org-gcal-test--with-utc
+    (org-gcal-test--with-instance-files
+        (org-gcal-test--instance-entry org-gcal-test--moved-instance)
+      (let ((entries (org-gcal--update-series
+                      org-gcal-test-calendar-id org-gcal-test--parent-event
+                      (org-gcal-test--instances) org-gcal-test--up-time
+                      org-gcal-test--down-time)))
         (should (= (length entries) 1))
         (should (equal (org-gcal--event-entry-entry-id (car entries))
                        org-gcal-test--instance-entry-id))
         (should (eq (marker-buffer (org-gcal--event-entry-marker (car entries)))
                     parent-buffer))
-        (should (eq (org-gcal--event-entry-event (car entries))
-                    org-gcal-test--moved-instance))))
-    (should (= (org-gcal-test--count-instance-entries parent-buffer) 1))
-    (should (equal (org-generic-id-find-id-file
-                    org-gcal-entry-id-property org-gcal-test--instance-entry-id
-                    'no-fallback)
-                   parent-file))))
+        (should (equal (org-gcal--event-entry-event (car entries))
+                       org-gcal-test--moved-instance)))
+      (should (= (org-gcal-test--count-instance-entries parent-buffer) 1))
+      (should (equal (org-generic-id-find-id-file
+                      org-gcal-entry-id-property org-gcal-test--instance-entry-id
+                      'no-fallback)
+                     parent-file))
+      (should (equal (org-gcal-test--parent-timestamps parent-buffer)
+                     '("<2026-09-30 Wed 08:00-13:00>"
+                       "<2026-10-28 Wed 08:00-13:00 +2w>"))))))
 
-(ert-deftest org-gcal-test--compact-instances-inserts-missing-instance ()
-  "Verify compaction inserts a modified instance missing from its parent."
-  (org-gcal-test--with-instance-files nil
-    (let ((org-gcal--parent-event-cache (make-hash-table :test #'equal))
-          (org-gcal--instance-collector (make-hash-table :test #'equal)))
-      (puthash "parent123" org-gcal-test--parent-event
-               org-gcal--parent-event-cache)
-      (puthash "parent123" (list org-gcal-test--moved-instance)
-               org-gcal--instance-collector)
-      (should-not (org-gcal--compact-instances org-gcal-test-calendar-id
-                                               calendar-file)))
-    (should (= (org-gcal-test--count-instance-entries parent-buffer) 1))))
+(ert-deftest org-gcal-test--update-series-inserts-missing-instance ()
+  "Verify a modified instance missing from its parent is inserted under it."
+  (org-gcal-test--with-utc
+    (org-gcal-test--with-instance-files nil
+      (should-not (org-gcal--update-series
+                   org-gcal-test-calendar-id org-gcal-test--parent-event
+                   (org-gcal-test--instances) org-gcal-test--up-time
+                   org-gcal-test--down-time))
+      (should (= (org-gcal-test--count-instance-entries parent-buffer) 1))
+      (with-current-buffer parent-buffer
+        (goto-char (point-min))
+        (should (search-forward "\n*** My recurring event\n" nil t))
+        (should (search-forward "<2026-10-16 Fri 08:00-13:00>" nil t)))
+      (should (equal (org-gcal-test--parent-timestamps parent-buffer)
+                     '("<2026-09-30 Wed 08:00-13:00>"
+                       "<2026-10-28 Wed 08:00-13:00 +2w>")))
+      (with-current-buffer parent-buffer
+        (goto-char (point-min))
+        (should (search-forward "+2w>\n\nDescription\n" nil t))))))
 
-(ert-deftest org-gcal-test--sync-handle-events-finds-unindexed-instance ()
-  "Verify an instance of an uncached parent already under it is not inserted.
-Pass 2 inserts such an instance directly under its parent; it returns
-the existing entry for an update instead."
-  (org-gcal-test--with-instance-files t
-    (let ((entries (org-gcal--sync-handle-events
-                    org-gcal-test-calendar-id calendar-file
-                    (vector org-gcal-test--moved-instance)
-                    nil nil nil nil nil :instances)))
-      (should (= (length entries) 1))
-      (should (equal (org-gcal--event-entry-entry-id (car entries))
-                     org-gcal-test--instance-entry-id))
-      (should (eq (marker-buffer (org-gcal--event-entry-marker (car entries)))
-                  parent-buffer)))
-    (should (= (org-gcal-test--count-instance-entries parent-buffer) 1))))
+(ert-deftest org-gcal-test--update-series-prunes-usual-instance ()
+  "Verify the heading of an instance at its usual time is deleted.
+The parent heading shows it instead."
+  (org-gcal-test--with-utc
+    (org-gcal-test--with-instance-files
+        (concat (org-gcal-test--instance-entry org-gcal-test--moved-instance)
+                (org-gcal-test--instance-entry
+                 (org-gcal-test--instance "2026-10-28")))
+      (org-gcal--update-series
+       org-gcal-test-calendar-id org-gcal-test--parent-event
+       (org-gcal-test--instances) org-gcal-test--up-time
+       org-gcal-test--down-time)
+      (should (= (org-gcal-test--count-entries
+                  parent-buffer org-gcal-test--usual-entry-id)
+                 0))
+      (should (= (org-gcal-test--count-instance-entries parent-buffer) 1))
+      (should (equal (org-gcal-test--parent-timestamps parent-buffer)
+                     '("<2026-09-30 Wed 08:00-13:00>"
+                       "<2026-10-28 Wed 08:00-13:00 +2w>"))))))
 
-(ert-deftest org-gcal-test--sync-handle-events-inserts-missing-instance ()
-  "Verify an instance of an uncached parent is inserted under it."
-  (org-gcal-test--with-instance-files nil
-    (should-not (org-gcal--sync-handle-events
-                 org-gcal-test-calendar-id calendar-file
-                 (vector org-gcal-test--moved-instance)
-                 nil nil nil nil nil :instances))
-    (should (= (org-gcal-test--count-instance-entries parent-buffer) 1))))
+(ert-deftest org-gcal-test--update-series-keeps-edited-instance ()
+  "Verify the heading of a usual instance with a subheading is kept.
+It is updated as an entry, and the parent heading doesn't show it."
+  (org-gcal-test--with-utc
+    (org-gcal-test--with-instance-files
+        (concat (org-gcal-test--instance-entry org-gcal-test--moved-instance)
+                (org-gcal-test--instance-entry
+                 (org-gcal-test--instance "2026-10-28") "Notes"))
+      (let ((entries (org-gcal--update-series
+                      org-gcal-test-calendar-id org-gcal-test--parent-event
+                      (org-gcal-test--instances) org-gcal-test--up-time
+                      org-gcal-test--down-time)))
+        (should (equal (sort (mapcar #'org-gcal--event-entry-entry-id entries)
+                             #'string<)
+                       (list org-gcal-test--instance-entry-id
+                             org-gcal-test--usual-entry-id))))
+      (should (= (org-gcal-test--count-entries
+                  parent-buffer org-gcal-test--usual-entry-id)
+                 1))
+      (should (equal (org-gcal-test--parent-timestamps parent-buffer)
+                     '("<2026-09-30 Wed 08:00-13:00>"
+                       "<2026-11-11 Wed 08:00-13:00 +2w>"))))))
 
-(ert-deftest org-gcal-test--sync-calendar-events-updates-compacted-entries ()
-  "Verify the entries returned by compaction are updated."
-  (let ((updates nil)
-        (org-gcal--instance-collector (make-hash-table :test #'equal)))
-    (puthash "parent123" (list org-gcal-test--moved-instance)
-             org-gcal--instance-collector)
-    (cl-letf (((symbol-function 'org-gcal--sync-request-events)
-               (lambda (&rest _) (deferred:succeed nil)))
-              ((symbol-function 'org-gcal--sync-handle-response)
-               (lambda (&rest _) []))
-              ((symbol-function 'org-gcal--sync-handle-events)
-               (lambda (&rest _) nil))
-              ((symbol-function 'org-gcal--compact-instances)
-               (lambda (&rest _) '(compacted)))
-              ((symbol-function 'org-gcal--sync-update-entries)
-               (lambda (_calendar-id entries skip-export)
-                 (push (list entries skip-export) updates)
-                 (deferred:succeed nil))))
-      (org-gcal--sync-calendar-events
-       (cons org-gcal-test-calendar-id "calendar.org") 'skip-export nil nil
-       nil nil nil :instances)
-      (deferred:flush-queue!))
-    (should (member '((compacted) skip-export) updates))))
+(ert-deftest org-gcal-test--update-series-keeps-refiled-instance ()
+  "Verify a usual instance refiled away from its parent is kept.
+It is updated as an entry, and the parent heading doesn't show it."
+  (org-gcal-test--with-utc
+    (org-gcal-test--with-instance-files
+        (org-gcal-test--instance-entry org-gcal-test--moved-instance)
+      (insert (replace-regexp-in-string
+               "^\\*\\*\\*" "*"
+               (org-gcal-test--instance-entry
+                (org-gcal-test--instance "2026-10-28"))))
+      (save-buffer)
+      (org-generic-id-add-location org-gcal-entry-id-property
+                                   org-gcal-test--usual-entry-id calendar-file)
+      (let ((entries (org-gcal--update-series
+                      org-gcal-test-calendar-id org-gcal-test--parent-event
+                      (org-gcal-test--instances) org-gcal-test--up-time
+                      org-gcal-test--down-time)))
+        (should (member org-gcal-test--usual-entry-id
+                        (mapcar #'org-gcal--event-entry-entry-id entries))))
+      (should (= (org-gcal-test--count-entries
+                  (current-buffer) org-gcal-test--usual-entry-id)
+                 1))
+      (should (equal (org-gcal-test--parent-timestamps parent-buffer)
+                     '("<2026-09-30 Wed 08:00-13:00>"
+                       "<2026-11-11 Wed 08:00-13:00 +2w>"))))))
 
-(ert-deftest org-gcal-test--sync-calendar-events-compacts-after-updates ()
-  "Verify compaction runs after the fetched entries are updated.
-Compaction can delete the heading of an entry: an update that runs
-after it would rewrite the heading that follows instead."
+(ert-deftest org-gcal-test--update-series-prunes-stale-instance ()
+  "Verify the heading of an instance the event no longer has is deleted.
+Only one due in the synced time range is: the others may exist."
+  (org-gcal-test--with-utc
+    (org-gcal-test--with-instance-files
+        (concat (org-gcal-test--instance-entry
+                 (org-gcal-test--instance "2026-10-21"))
+                (org-gcal-test--instance-entry
+                 (org-gcal-test--instance "2026-12-23")))
+      (org-gcal--update-series
+       org-gcal-test-calendar-id org-gcal-test--parent-event
+       (org-gcal-test--instances) org-gcal-test--up-time
+       org-gcal-test--down-time)
+      (should (= (org-gcal-test--count-entries
+                  parent-buffer "parent123_20261021T080000Z/foo@foobar.com")
+                 0))
+      (should (= (org-gcal-test--count-entries
+                  parent-buffer "parent123_20261223T080000Z/foo@foobar.com")
+                 1)))))
+
+;;;; Sync of recurring events
+
+(ert-deftest org-gcal-test--sync-handle-events-records-changed-instance ()
+  "Verify pass 2 records the recurring event of an instance as changed.
+It inserts no heading: the recurring event is updated once all its
+instances are fetched."
+  (org-gcal-test--with-utc
+    (org-gcal-test--with-instance-files nil
+      (let ((org-gcal--changed-series (make-hash-table :test #'equal)))
+        (should-not (org-gcal--sync-handle-events
+                     org-gcal-test-calendar-id calendar-file
+                     (vector org-gcal-test--moved-instance)
+                     nil nil nil nil nil :instances))
+        (should (gethash "parent123" org-gcal--changed-series)))
+      (should (= (org-gcal-test--count-instance-entries parent-buffer) 0)))))
+
+(ert-deftest org-gcal-test--sync-handle-events-records-changed-master ()
+  "Verify pass 1 caches a master, and records it and an exception changed."
+  (org-gcal-test--with-utc
+    (org-gcal-test--with-instance-files nil
+      (let ((org-gcal--changed-series (make-hash-table :test #'equal))
+            (org-gcal--parent-event-cache (make-hash-table :test #'equal)))
+        (org-gcal--sync-handle-events
+         org-gcal-test-calendar-id calendar-file
+         (vector org-gcal-test--parent-event)
+         nil nil nil nil nil :masters)
+        (should (eq (gethash "parent123" org-gcal--parent-event-cache)
+                    org-gcal-test--parent-event))
+        (should (gethash "parent123" org-gcal--changed-series))
+        (clrhash org-gcal--changed-series)
+        (should-not (org-gcal--sync-handle-events
+                     org-gcal-test-calendar-id calendar-file
+                     (vector org-gcal-test--moved-instance)
+                     nil nil nil nil nil :masters))
+        (should (gethash "parent123" org-gcal--changed-series))))))
+
+(ert-deftest org-gcal-test--sync-handle-events-cancels-instance ()
+  "Verify pass 2 handles a cancelled instance that has a heading."
+  (org-gcal-test--with-utc
+    (org-gcal-test--with-instance-files
+        (org-gcal-test--instance-entry org-gcal-test--moved-instance)
+      (org-generic-id-add-location org-gcal-entry-id-property
+                                   org-gcal-test--instance-entry-id parent-file)
+      (let ((org-gcal--changed-series (make-hash-table :test #'equal))
+            (org-gcal-update-cancelled-events-with-todo nil)
+            (org-gcal-remove-api-cancelled-events t))
+        (org-gcal--sync-handle-events
+         org-gcal-test-calendar-id calendar-file
+         (vector (org-gcal-test--cancelled-instance "2026-10-14"))
+         nil nil nil nil nil :instances)
+        (should (gethash "parent123" org-gcal--changed-series)))
+      (should (= (org-gcal-test--count-instance-entries parent-buffer) 0)))))
+
+(ert-deftest org-gcal-test--sync-calendar-events-syncs-series-after-updates ()
+  "Verify the changed recurring events are updated after the fetched entries.
+Updating a recurring event can delete the heading of an entry: an
+update that runs after it would rewrite the heading that follows instead."
   (let ((log nil)
-        (org-gcal--instance-collector (make-hash-table :test #'equal)))
-    (puthash "parent123" (list org-gcal-test--moved-instance)
-             org-gcal--instance-collector)
+        (org-gcal--changed-series (make-hash-table :test #'equal)))
+    (puthash "parent123" t org-gcal--changed-series)
     (org-gcal-test--with-temp-buffer org-gcal-test--update-entries-buffer
       (let ((entry (org-gcal--event-entry-create
                     :entry-id "foobar1234/foo@foobar.com"
@@ -1121,13 +1507,116 @@ after it would rewrite the heading that follows instead."
                    (lambda (&rest _) (list entry)))
                   ((symbol-function 'org-gcal--update-entry)
                    (lambda (&rest _) (push 'update log)))
-                  ((symbol-function 'org-gcal--compact-instances)
-                   (lambda (&rest _) (push 'compact log) nil)))
+                  ((symbol-function 'org-gcal--sync-changed-series)
+                   (lambda (&rest _) (push 'series log) (deferred:succeed nil))))
           (org-gcal--sync-calendar-events
            (cons org-gcal-test-calendar-id "calendar.org") 'skip-export nil nil
            nil nil nil :instances)
           (deferred:flush-queue!))))
-    (should (equal (reverse log) '(update compact)))))
+    (should (equal (reverse log) '(update series)))))
+
+(ert-deftest org-gcal-test--sync-series-fetches-master ()
+  "Verify a recurring event is updated from its fetched master and instances.
+The master is fetched unless pass 1 cached it, and the entries
+`org-gcal--update-series' returns are updated."
+  (org-gcal-test--with-utc
+    (org-gcal-test--with-instance-files nil
+      (let ((org-gcal--parent-event-cache (make-hash-table :test #'equal))
+            (fetched nil)
+            (updated nil))
+        (cl-letf (((symbol-function 'org-gcal--get-event)
+                   (lambda (calendar-id event-id)
+                     (push (list 'master calendar-id event-id) fetched)
+                     (deferred:succeed
+                      (make-request-response
+                       :status-code 200 :data org-gcal-test--parent-event))))
+                  ((symbol-function 'org-gcal--fetch-series-instances)
+                   (lambda (_calendar-id event-id up-time down-time)
+                     (push (list 'instances event-id up-time down-time) fetched)
+                     (deferred:succeed (org-gcal-test--instances))))
+                  ((symbol-function 'org-gcal--update-series)
+                   (lambda (_calendar-id master instances _up-time _down-time)
+                     (list (list master (length instances)))))
+                  ((symbol-function 'org-gcal--sync-update-entries)
+                   (lambda (_calendar-id entries skip-export)
+                     (push (list entries skip-export) updated)
+                     (deferred:succeed nil))))
+          (deferred:sync!
+           (org-gcal--sync-series org-gcal-test-calendar-id calendar-file
+                                  "parent123" 'skip-export 'up 'down))
+          (should (equal (reverse fetched)
+                         `((master ,org-gcal-test-calendar-id "parent123")
+                           (instances "parent123" up down))))
+          (should (equal updated
+                         `((((,org-gcal-test--parent-event 4)) skip-export))))
+          (setq fetched nil)
+          (puthash "parent123" org-gcal-test--parent-event
+                   org-gcal--parent-event-cache)
+          (deferred:sync!
+           (org-gcal--sync-series org-gcal-test-calendar-id calendar-file
+                                  "parent123" 'skip-export 'up 'down))
+          (should (equal fetched '((instances "parent123" up down)))))))))
+
+(ert-deftest org-gcal-test--sync-changed-series-error-skips-series ()
+  "Verify an error updating a recurring event is logged, and the others run."
+  (let ((org-gcal--changed-series (make-hash-table :test #'equal))
+        (synced nil)
+        (messages nil))
+    (puthash "broken" t org-gcal--changed-series)
+    (puthash "fine" t org-gcal--changed-series)
+    (cl-letf (((symbol-function 'org-gcal--sync-series)
+               (lambda (_calendar-id _calendar-file event-id &rest _)
+                 (when (equal event-id "broken")
+                   (error "Cannot sync %s" event-id))
+                 (push event-id synced)
+                 (deferred:succeed nil)))
+              ((symbol-function 'message)
+               (lambda (format-string &rest args)
+                 (push (apply #'format format-string args) messages))))
+      (deferred:sync!
+       (org-gcal--sync-changed-series org-gcal-test-calendar-id "calendar.org"
+                                      t 'up 'down)))
+    (should (equal synced '("fine")))
+    (should (cl-some (lambda (message)
+                       (string-match-p "recurring event broken.*Cannot sync broken"
+                                       message))
+                     messages))))
+
+(ert-deftest org-gcal-test--fetch-series-instances-pages ()
+  "Verify the instances of a recurring event are fetched from every page."
+  (let ((pages nil))
+    (cl-letf (((symbol-function 'org-gcal--request-series-instances)
+               (lambda (_calendar-id _event-id _up-time _down-time page-token)
+                 (push page-token pages)
+                 (deferred:succeed
+                  (make-request-response
+                   :status-code 200
+                   :data (if page-token
+                             '(:items [(:id "c")])
+                           '(:items [(:id "a") (:id "b")]
+                             :nextPageToken "page2")))))))
+      (should (equal (deferred:sync!
+                      (org-gcal--fetch-series-instances
+                       org-gcal-test-calendar-id "parent123" 'up 'down))
+                     '((:id "a") (:id "b") (:id "c")))))
+    (should (equal (reverse pages) '(nil "page2")))))
+
+(ert-deftest org-gcal-test--request-series-instances-cancelled ()
+  "Verify the instances of a recurring event are requested with cancelled ones."
+  (let ((params nil))
+    (cl-letf (((symbol-function 'org-gcal--get-access-token)
+               (lambda (&rest _) "token"))
+              ((symbol-function 'request-deferred)
+               (lambda (_url &rest args)
+                 (setq params (plist-get args :params))
+                 (deferred:succeed nil))))
+      (org-gcal--request-series-instances
+       org-gcal-test-calendar-id "parent123"
+       (encode-time '(0 0 0 1 10 2025 nil nil t))
+       (encode-time '(0 0 0 1 10 2027 nil nil t))))
+    (should (equal (cdr (assoc "showDeleted" params)) "true"))
+    (should (assoc "timeMin" params))
+    (should (assoc "timeMax" params))))
 
 (ert-deftest org-gcal-test--post-at-point-api-response ()
   "Verify that ‘org-gcal-post-to-point’ updates an event using the data

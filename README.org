@@ -435,9 +435,19 @@ event:
   SCHEDULED: <2020-08-28 Fri 11:00>
 #+END_SRC
 
-Here the parent meeting has been running for several years, but only the
-instances of the meeting in the range given by =org-gcal-down-days= and
-=org-gcal-up-days= are fetched.
+Here the parent meeting has been running for several years, but only the instances of the meeting in the range given by =org-gcal-down-days= and =org-gcal-up-days= are fetched.
+
+With =org-gcal-recurring-events-mode= set to =:instances=, a recurring event has one heading, whose timestamps show its usual occurrences. Only an instance that was moved, renamed or resized gets a child heading, with its own timestamp, and cancelled instances are left out. Since an Org repeater can't skip an occurrence, the usual instances until the last such exception get a timestamp each, and a repeater shows those after it. Here the meeting of October 9 moved to October 10:
+
+#+BEGIN_SRC org
+  ,* Meeting
+  <2026-10-02 Fri 11:00-12:00>
+  <2026-10-16 Fri 11:00-12:00 +1w>
+  ,** Meeting
+  <2026-10-10 Sat 11:00-12:00>
+#+END_SRC
+
+Whenever a recurring event or one of its instances changes, org-gcal fetches its instances in the range given by =org-gcal-down-days= and =org-gcal-up-days=, and updates these headings: it deletes the child heading of an instance back at its usual time, unless you added a subheading to it, and rewrites the timestamps. A rule that Org repeaters can't express, such as the first Sunday of each month, gets a timestamp for each instance in that range. An Org repeater has no end, so a recurring event without exceptions keeps repeating in the agenda after its last occurrence.
 
 ** Customizing the contents of event entries
 
