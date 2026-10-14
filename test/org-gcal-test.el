@@ -1285,6 +1285,23 @@ first master."
     (should (equal (buffer-string)
                    "* Event\n:PROPERTIES:\n:END:\n:org-gcal:\n<2026-09-30 Wed 08:00-13:00>\n<2026-10-28 Wed 08:00-13:00 +2w>\n\nDescription\n:END:\n"))))
 
+(ert-deftest org-gcal-test--update-parent-timestamps-keeps-child-marker ()
+  "Verify a marker at the child heading after the timestamps stays there.
+The update of a child heading found before goes through such a marker."
+  (org-gcal-test--with-temp-buffer
+      "* Event\n:PROPERTIES:\n:END:\n\n[2026-09-30 Wed 08:00-13:00 +2w]\n** Child\n"
+    (let ((org-gcal-description-mode 'body)
+          (child (save-excursion
+                   (re-search-forward "^\\*\\* Child")
+                   (copy-marker (match-beginning 0)))))
+      (org-gcal--update-parent-timestamps
+       (point-marker) '("<2026-09-30 Wed 08:00-13:00>"
+                        "<2026-10-28 Wed 08:00-13:00 +2w>"))
+      (should (equal (buffer-string)
+                     "* Event\n:PROPERTIES:\n:END:\n\n<2026-09-30 Wed 08:00-13:00>\n<2026-10-28 Wed 08:00-13:00 +2w>\n** Child\n"))
+      (goto-char child)
+      (should (looking-at "\\*\\* Child")))))
+
 (ert-deftest org-gcal-test--update-parent-timestamps-unchanged ()
   "Verify the buffer is left unmodified when the timestamps don't change."
   (org-gcal-test--with-temp-buffer

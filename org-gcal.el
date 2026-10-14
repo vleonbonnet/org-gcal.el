@@ -2402,10 +2402,14 @@ if the timestamps don't change."
                 (push (string-trim (match-string-no-properties 0)) old)
                 (forward-line))
               (unless (equal (nreverse old) timestamps)
-                (delete-region start (point))
-                (goto-char start)
-                (dolist (timestamp timestamps)
-                  (insert timestamp "\n")))))
+                (let ((old-end (point-marker)))
+                  ;; Insert before deleting: a marker at the heading that
+                  ;; follows would otherwise end up before the timestamps.
+                  (goto-char start)
+                  (dolist (timestamp timestamps)
+                    (insert timestamp "\n"))
+                  (delete-region (point) old-end)
+                  (set-marker old-end nil)))))
         (set-marker end nil)))))
 
 (defun org-gcal--instance-id-minutes (event-id master)
